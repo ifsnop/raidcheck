@@ -186,6 +186,8 @@ def main(argv):
         if opt in ('-h', '--help'):
             usage()
             sys.exit()
+        elif opt in ('-r', '--recursive'):
+            config['recursive'] = True
         elif opt in ('-d', '--db-file'):
             config['db_file'] = arg
         elif opt in ('-w', '--watch-path'):
