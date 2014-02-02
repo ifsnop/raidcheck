@@ -66,7 +66,7 @@ class EventHandler(pyinotify.ProcessEvent):
         }
 
         try:
-            filestat = os.stat(event.pathname)
+            filestat = os.stat(file['pathnameext'])
             file['size'] = filestat.st_size
         except OSError as e:
             if e.errno != errno.ENOENT: # ignore file not found
