@@ -31,14 +31,24 @@ config = { 'db_file' : None,
     'self': 'monitord.py'
     }
 
+cookie_dict = {}
+
 class EventHandler(pyinotify.ProcessEvent):
     def process_IN_DELETE(self, event):
         self.process(event)
 
     def process_IN_MOVED_TO(self, event):
+        #print 'in moved to'
+        #pprint.pprint(event)
         self.process(event)
 
     def process_IN_MOVED_FROM(self, event):
+        #print 'in moved from'
+        #pprint.pprint(event)
+        cookie_dict[event.cookie] = event.path
+        self.process(event)
+
+    def process_IN_MOVE_SELF(self, event):
         self.process(event)
 
     def process_IN_CLOSE_WRITE(self, event):
@@ -54,7 +64,7 @@ class EventHandler(pyinotify.ProcessEvent):
 
     def process(self, event):
         #<Event dir=False mask=0x8 maskname=IN_CLOSE_WRITE name=q.qw11 path=/tmp/l pathname=/tmp/l/q.qw11 wd=4 >
-        #sys.stdout.write(formatTime() + pprint.pformat(event) + '\n')
+        #sys.stdout.write("==================================" + '\n' + format_time() + pprint.pformat(event) + '\n')
 
         file = {'nameext' : event.name,
                 'path' : os.path.normpath(event.path),
@@ -62,21 +72,28 @@ class EventHandler(pyinotify.ProcessEvent):
                 'name' : os.path.splitext(event.name)[0],
                 'ext' : os.path.splitext(event.pathname)[1],
                 'size' : -1,
-                'event' : event.maskname
+                'event' : event.maskname,
+                'dir' : event.dir
         }
+
+        # only sometimes when maskname==IN_MOVED_TO
+        if hasattr(event, 'src_pathname'):
+            file['src'] = event.src_pathname
 
         try:
             filestat = os.stat(file['pathnameext'])
             file['size'] = filestat.st_size
         except OSError as e:
+            #print e.strerror
             if e.errno != errno.ENOENT: # ignore file not found
                 raise
             else:
                 filestat = None
+                #print "some file/dir was deleted, so no stat possible"
 
-        print '{0} > filename({1}) filesize({2}) extension({3}) operation({4})'\
-                .format(format_time(), file['nameext'], format_size(file['size']), \
-                file['ext'], file['event'])
+        #print '{0} > filename({1}) filesize({2}) extension({3}) operation({4})'\
+        #        .format(format_time(), file['nameext'], format_size(file['size']), \
+        #        file['ext'], file['event'])
 
         update_database(file)
 
@@ -135,6 +152,16 @@ def update_database(file):
 
     # print '{0} + file ({1}) with action ({2})'.format(format_time(), file['nameext'], file['event'])
     upathnameext = unicode(file['pathnameext'], sys.getfilesystemencoding())
+    if 'src' in file:
+        usrc = unicode(file['src'], sys.getfilesystemencoding())
+    #else:
+    #    file['event'] = 'IN_CLOSE_WRITE'
+
+    if file['event'] == 'IN_MOVED_TO' and 'src' not in file:
+        file['event'] = 'IN_CLOSE_WRITE'
+
+    #sys.stdout.write(format_time() + pprint.pformat(file) + '\n')
+
     conn = sqlite3.connect(config['db_file'], detect_types=sqlite3.PARSE_DECLTYPES)
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
@@ -143,21 +170,53 @@ def update_database(file):
             FROM files WHERE pathnameext=?''', [upathnameext])
         row = c.fetchone()
         if row is None:
-            # print "insert new file"
+            print '{0} > adding({1})'.format(format_time(), upathnameext)
             c.execute('''INSERT INTO files (pathnameext, size, ts_create, ts_update, status) VALUES
                 (?,?,?,?,?)''', [upathnameext, file['size'], datetime.datetime.now(),
                 datetime.datetime.now(), 'updated'])
         else:
-            # print "update old file"
+            print '{0} > updating({1})'.format(format_time(), upathnameext)
             c.execute('''UPDATE files SET status=?, ts_update=?
                 WHERE pathnameext=?''', ['updated', datetime.datetime.now(), upathnameext])
 
-    elif file['event'] == 'IN_DELETE':
-            # print "delete file"
+    elif file['event'][:9] == 'IN_DELETE' or file['event'] == 'IN_MOVED_FROM':
+        if file['event'][:9] == 'IN_DELETE' and file['dir']:
+            print '{0} > directory deleted({1})'.format(format_time(), upathnameext)
+        else:
+            print '{0} > deleting({1})'.format(format_time(), upathnameext)
             c.execute('''DELETE FROM files WHERE pathnameext=?''', [upathnameext])
 
-#                (pathnameext text, size integer, sha1 text, ts_create timestamp,
-#                ts_update timestamp, status text, UNIQUE (pathnameext))''')
+    elif file['event'] == 'IN_MOVED_TO':
+        c.execute('''SELECT pathnameext, size, sha1, ts_create, ts_update, status
+            FROM files WHERE pathnameext=?''', [usrc])
+        row = c.fetchone()
+        if row is not None:
+            print '{0} > renaming({1}=>{2})'.format(format_time(), usrc, upathnameext)
+            c.execute('''UPDATE files SET status=?, ts_update=?, pathnameext=?
+                WHERE pathnameext=?''', ['updated', datetime.datetime.now(), upathnameext, usrc])
+        else:
+            print '{0} > adding({1})'.format(format_time(), upathnameext)
+            c.execute('''INSERT INTO files (pathnameext, size, ts_create, ts_update, status) VALUES
+                (?,?,?,?,?)''', [upathnameext, file['size'], datetime.datetime.now(),
+                datetime.datetime.now(), 'updated'])
+
+    elif file['event'] == 'IN_MOVED_TO|IN_ISDIR':
+        #print "renaming lots of files len(" + str(len(usrc)) + ") str(" + usrc + ")"
+        #print "SELECT pathnameext, size, sha1, ts_create, ts_update, status FROM files WHERE SUBSTR(pathnameext, 0," + str(len(usrc)+2) + ")='" + usrc + "/'"
+        c.execute('''SELECT pathnameext, size, sha1, ts_create, ts_update, status
+            FROM files WHERE SUBSTR(pathnameext, 0, ?)=?''', [len(usrc)+2, usrc + '/'])
+        rows = c.fetchall()
+        for row in rows:
+            #print "renamed dir, update inside files dir(" + usrc + ') upathnameext(' + upathnameext + ') row(' + row['pathnameext'] + ') len(usrc)=' + str(len(usrc)) + '\n'
+            newname =  upathnameext +  '/' + row['pathnameext'][len(usrc)+1:]
+            #print ">" + newname + '<\n'
+            print '{0} > renaming({1}=>{2})'.format(format_time(), row['pathnameext'], newname)
+            c.execute('''UPDATE files SET status=?, ts_update=?, pathnameext=?
+                WHERE pathnameext=?''', ['updated', datetime.datetime.now(), newname, row['pathnameext']])
+
+    elif file['event'] == 'IN_CREATE':
+        print "new directory, nothing to do..."
+
     conn.commit()
     conn.close()
 
@@ -215,7 +274,7 @@ def main(argv):
     notifier = pyinotify.Notifier(wm, EventHandler())
     wm.add_watch(config['watch_path'],
         pyinotify.IN_CLOSE_WRITE | pyinotify.IN_MOVED_TO | pyinotify.IN_MOVED_FROM |
-        pyinotify.IN_DELETE | pyinotify.IN_Q_OVERFLOW,
+        pyinotify.IN_DELETE | pyinotify.IN_Q_OVERFLOW | pyinotify.IN_MOVE_SELF,
         rec=config['recursive'], auto_add=config['recursive'])
     #on_loop_func = functools.partial(on_loop, counter=Counter())
     try:
