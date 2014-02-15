@@ -24,6 +24,7 @@ import errno                    # to fail stat with proper codes
 from math import log            # format_size()
 import sqlite3
 import pyinotify
+import threading
 
 config = { 'db_file' : None,
     'recursive' : False,
@@ -70,7 +71,6 @@ class EventHandler(pyinotify.ProcessEvent):
         #<Event dir=False mask=0x8 maskname=IN_CLOSE_WRITE name=q.qw11 path=/tmp/l pathname=/tmp/l/q.qw11 wd=4 >
         #sys.stdout.write("=process=" + format_time() + " " + pprint.pformat(event) + '\n')
 
-        #return True
         file = {'nameext' : event.name,
                 'path' : os.path.normpath(event.path),
                 'pathnameext' : os.path.normpath(event.pathname),
@@ -97,12 +97,11 @@ class EventHandler(pyinotify.ProcessEvent):
                 filestat = None
                 #print "some file/dir was deleted, so no stat possible"
 
-        time.sleep(2)
-        print '{0} > filename({1}) filesize({2}) extension({3}) operation({4})'\
-                .format(format_time(), file['nameext'], format_size(file['size']), \
-                file['ext'], file['event'])
+        #print '{0} > filename({1}) filesize({2}) extension({3}) operation({4}) thread({5})'\
+        #        .format(format_time(), file['nameext'], format_size(file['size']),
+        #        file['ext'], file['event'], threading.current_thread())
 
-        #update_database(file)
+        update_database(file)
 
         #if filestat is None:
         #    return False
@@ -161,8 +160,6 @@ def update_database(file):
     if file['event'][:9] == 'IN_DELETE' and file['dir']: return True
     #if file['event'][:9] == 'IN_CREATE' and file['dir']: return True
 
-    time.sleep(2)
-
     print '{0} + file ({1}) with action ({2})'.format(format_time(), file['nameext'], file['event'])
 
     upathnameext = unicode(file['pathnameext'], sys.getfilesystemencoding())
@@ -179,10 +176,6 @@ def update_database(file):
     conn = sqlite3.connect(config['db_file'], detect_types=sqlite3.PARSE_DECLTYPES)
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
-
-    conn.commit()
-    conn.close()
-    return True
 
     if file['event'] == 'IN_CLOSE_WRITE':
         c.execute('''SELECT pathnameext, size, sha1, ts_create, ts_update, status
@@ -230,11 +223,46 @@ def update_database(file):
             c.execute('''UPDATE files SET status=?, ts_update=?, pathnameext=?
                 WHERE pathnameext=?''', ['updated', datetime.datetime.now(), newname, row['pathnameext']])
 
-    #elif file['event'] == 'IN_CREATE':
-    #    print "new directory, nothing to do..."
-
     conn.commit()
     conn.close()
+
+def daemonize(PIDFILE='/tmp/inotify-daemon.pid'):
+    """
+    Forks current process into a daemon, there are several examples in the web for do this, but a
+    double fork is needed.
+    """
+
+    # Do first fork.
+    try:
+        pid = os.fork()
+        if pid > 0:
+            # exit first parent
+            sys.exit(0)
+    except OSError, e:
+        print >>sys.stderr, "fork #1 failed: %d (%s)" % (e.errno, e.strerror)
+        sys.exit(1)
+
+    # make sure our executable is in absolute path
+    daemon_abs_path = os.path.join(os.path.abspath(os.curdir), sys.argv[0])
+    sys.argv[0] = daemon_abs_path
+
+    # Decouple from parent environment.
+    os.chdir("/")
+    os.setsid()
+    os.umask(0)
+
+    # Do second fork.
+    try:
+        pid = os.fork()
+        if pid > 0:
+            # exit from second parent, print eventual PID before
+            print "Daemon PID %d" % pid
+            open(PIDFILE,'w').write("%d"%pid)
+            sys.exit(0)
+    except OSError, e:
+        print >>sys.stderr, "fork #2 failed: %d (%s)" % (e.errno, e.strerror)
+        sys.exit(1)
+    # Now I am a daemon!
 
 def main(argv):
     def usage():
@@ -323,19 +351,12 @@ def main(argv):
             FROM files WHERE SUBSTR(pathnameext, 0, ?)=?''', [len(uwatch_path)+2, uwatch_path + '/'])
         rows = c.fetchall()
         for row in rows:
-            #print row['pathnameext']
-            #"renamed dir, update inside files dir(" + usrc + ') upathnameext(' + upathnameext + ') row(' + row['pathnameext'] + ') len(usrc)=' + str(len(usrc)) + '\n'
-            #newname =  upathnameext +  '/' + row['pathnameext'][len(usrc)+1:]
             size = -1
             try:
                 filestat = os.stat(row['pathnameext'])
                 size = filestat.st_size
             except OSError as e:
                 pass
-                #if e.errno != errno.ENOENT: # ignore file not found
-                #    raise
-                #else:
-                #    print "some file/dir was deleted, so no stat possible"
 
             pathnameext = unicode(row['pathnameext']).encode('utf8')
             upathnameext = row['pathnameext']
@@ -353,26 +374,40 @@ def main(argv):
         conn.commit()
         conn.close()
 
-    #sys.exit()
-
     wm = pyinotify.WatchManager()
-    notifier = pyinotify.Notifier(wm, EventHandler())
-    wm.add_watch(config['watch_path'],
-        pyinotify.ALL_EVENTS,
-        #pyinotify.IN_CLOSE_WRITE | pyinotify.IN_MOVED_TO | pyinotify.IN_MOVED_FROM |
+    mask = pyinotify.ALL_EVENTS
+        # | pyinotify.IN_CLOSE_WRITE | pyinotify.IN_MOVED_TO | pyinotify.IN_MOVED_FROM |
         #pyinotify.IN_DELETE | pyinotify.IN_DELETE_SELF | pyinotify.IN_CREATE | pyinotify.IN_Q_OVERFLOW |
         #pyinotify.IN_MOVE_SELF,
-        rec=config['recursive'], auto_add=config['recursive'])
-    #on_loop_func = functools.partial(on_loop, counter=Counter())
+
+    notifier = pyinotify.ThreadedNotifier(wm, default_proc_fun=EventHandler(), read_freq=0, threshold=0, timeout=1)
+    notifier.start()
+    wdd = wm.add_watch(config['watch_path'],
+        mask,
+        rec=config['recursive'],
+        auto_add=config['recursive'])
+
+
     try:
+        # DO THINGS
+        while True:
+            time.sleep(10)
+            print "tic"
+
+    except KeyboardInterrupt:
+        notifier.stop()
+        sys.exit(0)
+
+    #on_loop_func = functools.partial(on_loop, counter=Counter())
+    #try:
         # disabled callback counter from example, not needed
         #notifier.loop(daemonize=False, callback=on_loop_func,
         #    pid_file="/var/run/{config['self']}", stdout='/tmp/stdout.txt')
-        notifier.loop(daemonize=False, callback=None,
-            pid_file="/var/run/{config['self']}", stdout='/tmp/stdout.txt')
+    #    notifier.loop(callback=None, daemonize=False,
+    #        pid_file="/var/run/{config['self']}", stdout='/tmp/stdout.txt')
 
-    except pyinotify.NotifierError, err:
-        print >> sys.stderr, err
+    #except pyinotify.NotifierError, err:
+    #    print >> sys.stderr, err
 
     return
 
