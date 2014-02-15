@@ -31,9 +31,12 @@ config = { 'db_file' : None,
     'self': 'monitord.py'
     }
 
-cookie_dict = {}
+#cookie_dict = {}
 
 class EventHandler(pyinotify.ProcessEvent):
+    def process_IN_CREATE(self, event):
+        self.process(event)
+
     def process_IN_DELETE(self, event):
         self.process(event)
 
@@ -45,7 +48,7 @@ class EventHandler(pyinotify.ProcessEvent):
     def process_IN_MOVED_FROM(self, event):
         #print 'in moved from'
         #pprint.pprint(event)
-        cookie_dict[event.cookie] = event.path
+        #cookie_dict[event.cookie] = event.path
         self.process(event)
 
     def process_IN_MOVE_SELF(self, event):
@@ -60,12 +63,14 @@ class EventHandler(pyinotify.ProcessEvent):
         return
 
     def process_default(self, event):
+        #sys.stdout.write("=default=" + '\n' + format_time() + pprint.pformat(event) + '\n')
         return
 
     def process(self, event):
         #<Event dir=False mask=0x8 maskname=IN_CLOSE_WRITE name=q.qw11 path=/tmp/l pathname=/tmp/l/q.qw11 wd=4 >
-        #sys.stdout.write("==================================" + '\n' + format_time() + pprint.pformat(event) + '\n')
+        #sys.stdout.write("=process=" + format_time() + " " + pprint.pformat(event) + '\n')
 
+        #return True
         file = {'nameext' : event.name,
                 'path' : os.path.normpath(event.path),
                 'pathnameext' : os.path.normpath(event.pathname),
@@ -84,24 +89,25 @@ class EventHandler(pyinotify.ProcessEvent):
             filestat = os.stat(file['pathnameext'])
             file['size'] = filestat.st_size
         except OSError as e:
-            #print e.strerror
+            # print e.strerror
             if e.errno != errno.ENOENT: # ignore file not found
+                print "!!!!!!!!!!!!!!!!!!!!!!!!raised error!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
                 raise
             else:
                 filestat = None
                 #print "some file/dir was deleted, so no stat possible"
 
-        #print '{0} > filename({1}) filesize({2}) extension({3}) operation({4})'\
-        #        .format(format_time(), file['nameext'], format_size(file['size']), \
-        #        file['ext'], file['event'])
+        time.sleep(2)
+        print '{0} > filename({1}) filesize({2}) extension({3}) operation({4})'\
+                .format(format_time(), file['nameext'], format_size(file['size']), \
+                file['ext'], file['event'])
 
-        update_database(file)
+        #update_database(file)
 
-        if filestat is None:
-            return False
-
-        if not stat.S_ISREG(filestat.st_mode):
-            return False
+        #if filestat is None:
+        #    return False
+        #if not stat.S_ISREG(filestat.st_mode):
+        #    return False
 
         return True
 
@@ -148,9 +154,17 @@ def sha1_file(filename):
 
 def update_database(file):
     if config['db_file'] is None:
-        return
+        return True
 
-    # print '{0} + file ({1}) with action ({2})'.format(format_time(), file['nameext'], file['event'])
+    if file['event'] == 'IN_DELETE_SELF': return True
+    if file['event'][:9] == 'IN_CREATE': return True
+    if file['event'][:9] == 'IN_DELETE' and file['dir']: return True
+    #if file['event'][:9] == 'IN_CREATE' and file['dir']: return True
+
+    time.sleep(2)
+
+    print '{0} + file ({1}) with action ({2})'.format(format_time(), file['nameext'], file['event'])
+
     upathnameext = unicode(file['pathnameext'], sys.getfilesystemencoding())
     if 'src' in file:
         usrc = unicode(file['src'], sys.getfilesystemencoding())
@@ -165,6 +179,11 @@ def update_database(file):
     conn = sqlite3.connect(config['db_file'], detect_types=sqlite3.PARSE_DECLTYPES)
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
+
+    conn.commit()
+    conn.close()
+    return True
+
     if file['event'] == 'IN_CLOSE_WRITE':
         c.execute('''SELECT pathnameext, size, sha1, ts_create, ts_update, status
             FROM files WHERE pathnameext=?''', [upathnameext])
@@ -180,11 +199,8 @@ def update_database(file):
                 WHERE pathnameext=?''', ['updated', datetime.datetime.now(), upathnameext])
 
     elif file['event'][:9] == 'IN_DELETE' or file['event'] == 'IN_MOVED_FROM':
-        if file['event'][:9] == 'IN_DELETE' and file['dir']:
-            print '{0} > directory deleted({1})'.format(format_time(), file['pathnameext'])
-        else:
-            print '{0} > deleting({1})'.format(format_time(), file['pathnameext'])
-            c.execute('''DELETE FROM files WHERE pathnameext=?''', [upathnameext])
+        print '{0} > deleting({1})'.format(format_time(), file['pathnameext'])
+        c.execute('''DELETE FROM files WHERE pathnameext=?''', [upathnameext])
 
     elif file['event'] == 'IN_MOVED_TO':
         c.execute('''SELECT pathnameext, size, sha1, ts_create, ts_update, status
@@ -214,8 +230,8 @@ def update_database(file):
             c.execute('''UPDATE files SET status=?, ts_update=?, pathnameext=?
                 WHERE pathnameext=?''', ['updated', datetime.datetime.now(), newname, row['pathnameext']])
 
-    elif file['event'] == 'IN_CREATE':
-        print "new directory, nothing to do..."
+    #elif file['event'] == 'IN_CREATE':
+    #    print "new directory, nothing to do..."
 
     conn.commit()
     conn.close()
@@ -342,8 +358,10 @@ def main(argv):
     wm = pyinotify.WatchManager()
     notifier = pyinotify.Notifier(wm, EventHandler())
     wm.add_watch(config['watch_path'],
-        pyinotify.IN_CLOSE_WRITE | pyinotify.IN_MOVED_TO | pyinotify.IN_MOVED_FROM |
-        pyinotify.IN_DELETE | pyinotify.IN_Q_OVERFLOW | pyinotify.IN_MOVE_SELF,
+        pyinotify.ALL_EVENTS,
+        #pyinotify.IN_CLOSE_WRITE | pyinotify.IN_MOVED_TO | pyinotify.IN_MOVED_FROM |
+        #pyinotify.IN_DELETE | pyinotify.IN_DELETE_SELF | pyinotify.IN_CREATE | pyinotify.IN_Q_OVERFLOW |
+        #pyinotify.IN_MOVE_SELF,
         rec=config['recursive'], auto_add=config['recursive'])
     #on_loop_func = functools.partial(on_loop, counter=Counter())
     try:
