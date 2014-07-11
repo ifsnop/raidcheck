@@ -284,7 +284,7 @@ def main(argv):
     print '{0} > options: watch-path({1}) free_bytes({2})'.format(format_time(), config['watch_path'], format_size(get_free_space_bytes(config['watch_path'])))
 
     if config['db_file'] is not None:
-        print '{0} > update phase 1'.format(format_time())
+        print '{0} > update phase 1 (check for table)'.format(format_time())
         conn = sqlite3.connect(config['db_file'], detect_types=sqlite3.PARSE_DECLTYPES)
         conn.row_factory = sqlite3.Row
         c = conn.cursor()
@@ -294,7 +294,7 @@ def main(argv):
                 (pathnameext text, size integer, sha1 text, ts_create timestamp,
                 ts_update timestamp, status text, UNIQUE (pathnameext))''')
 
-        print '{0} > update phase 2'.format(format_time())
+        print '{0} > update phase 2 (check for files in fs not in db)'.format(format_time())
         for root, dirs, files in os.walk(config['watch_path'], topdown=True):
             for name in files:
                 pathnameext = os.path.join(root, name)
@@ -325,7 +325,7 @@ def main(argv):
                     c.execute('''UPDATE files SET status=?, ts_update=?, size=?
                         WHERE pathnameext=?''', ['updated', datetime.datetime.now(), size, upathnameext])
 
-        print '{0} > update phase 3'.format(format_time())
+        print '{0} > update phase 3 (check for files in db not in fs)'.format(format_time())
         uwatch_path = unicode(config['watch_path'], sys.getfilesystemencoding())
         c.execute('''SELECT pathnameext, size, sha1, ts_create, ts_update, status
             FROM files WHERE SUBSTR(pathnameext, 0, ?)=?''', [len(uwatch_path)+2, uwatch_path + '/'])
@@ -371,7 +371,7 @@ def main(argv):
     mask = pyinotify.IN_CLOSE_WRITE | pyinotify.IN_MOVED_TO | pyinotify.IN_MOVED_FROM |\
         pyinotify.IN_DELETE | pyinotify.IN_DELETE_SELF | pyinotify.IN_CREATE | pyinotify.IN_Q_OVERFLOW |\
         pyinotify.IN_MOVE_SELF
-        #pyinotify.ALL_EVENTS,
+        #pyinotify.ALL_EVENTS
     wm.add_watch(config['watch_path'],
         mask,
         rec=config['recursive'],
@@ -387,7 +387,7 @@ def main(argv):
             while notifier.check_events():  #loop in case more events appear while we are processing
                 notifier.read_events()
                 notifier.process_events()
-            print "toc"
+            print '{0} > toc'.format(format_time())
         # disabled callback counter from example, not needed
         #notifier.loop(daemonize=False, callback=on_loop_func,
         #    pid_file="/var/run/{config['self']}", stdout='/tmp/stdout.txt')
