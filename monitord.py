@@ -236,7 +236,7 @@ class BGWorker(threading.Thread):
 
     def run(self):
         while not self.salir[0]:
-            print '{0} > tic'.format(format_time())
+            #print '{0} > tic'.format(format_time())
             while not self.queue.empty():
                 item = self.queue.get()
                 update_database(item)
