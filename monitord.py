@@ -186,8 +186,8 @@ def update_database(file):
                 datetime.datetime.now(), 'updated'])
         else:
             print '{0} > updating({1})'.format(format_time(), file['pathnameext'])
-            c.execute('''UPDATE files SET status=?, ts_update=?
-                WHERE pathnameext=?''', ['updated', datetime.datetime.now(), upathnameext])
+            c.execute('''UPDATE files SET status=?, ts_update=?, size=?
+                WHERE pathnameext=?''', ['updated', datetime.datetime.now(), file['size'], upathnameext])
 
     elif file['event'][:9] == 'IN_DELETE' or file['event'] == 'IN_MOVED_FROM':
         print '{0} > deleting({1})'.format(format_time(), file['pathnameext'])
