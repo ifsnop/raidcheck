@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
-""" monitord.py - Starts automatic SASS-C processes when new files are written."""
+""" monitord.py - Hashes files using inotify events."""
 
 __author__ = "Diego Torres"
 __copyright__ = "Copyright (C) 2014 Diego Torres <diego dot torres at gmail dot com>"
@@ -141,9 +141,13 @@ def check_free_space(paths, free_bytes_limit):
     return True
 
 def sha1_file(filename):
-    import hashlib
-    with open(filename, 'rb') as f:
-        return hashlib.sha1(f.read()).hexdigest()
+    try:
+        import hashlib
+        with open(filename, 'rb') as f:
+            return hashlib.sha1(f.read()).hexdigest()
+    except (OSError, IOError) as e:
+        return None
+    return None
 
 def update_database(file):
     if config['db_file'] is None:
@@ -172,6 +176,7 @@ def update_database(file):
     #sys.stdout.write(format_time() + pprint.pformat(file) + '\n')
 
     conn = sqlite3.connect(config['db_file'], detect_types=sqlite3.PARSE_DECLTYPES)
+    #timeout=1
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
 
@@ -183,11 +188,11 @@ def update_database(file):
             print '{0} > adding({1})'.format(format_time(), file['pathnameext'])
             c.execute('''INSERT INTO files (pathnameext, size, ts_create, ts_update, status) VALUES
                 (?,?,?,?,?)''', [upathnameext, file['size'], datetime.datetime.now(),
-                datetime.datetime.now(), 'updated'])
+                datetime.datetime.now(), 'created'])
         else:
             print '{0} > updating({1})'.format(format_time(), file['pathnameext'])
             c.execute('''UPDATE files SET status=?, ts_update=?, size=?
-                WHERE pathnameext=?''', ['updated', datetime.datetime.now(), file['size'], upathnameext])
+                WHERE pathnameext=?''', ['created', datetime.datetime.now(), file['size'], upathnameext])
 
     elif file['event'][:9] == 'IN_DELETE' or file['event'] == 'IN_MOVED_FROM':
         print '{0} > deleting({1})'.format(format_time(), file['pathnameext'])
@@ -200,12 +205,12 @@ def update_database(file):
         if row is not None:
             print '{0} > renaming({1}=>{2})'.format(format_time(), file['src'], file['pathnameext'])
             c.execute('''UPDATE files SET status=?, ts_update=?, pathnameext=?
-                WHERE pathnameext=?''', ['updated', datetime.datetime.now(), upathnameext, usrc])
+                WHERE pathnameext=?''', ['created', datetime.datetime.now(), upathnameext, usrc])
         else:
             print '{0} > adding({1})'.format(format_time(), file['pathnameext'])
             c.execute('''INSERT INTO files (pathnameext, size, ts_create, ts_update, status) VALUES
                 (?,?,?,?,?)''', [upathnameext, file['size'], datetime.datetime.now(),
-                datetime.datetime.now(), 'updated'])
+                datetime.datetime.now(), 'created'])
 
     elif file['event'] == 'IN_MOVED_TO|IN_ISDIR':
         #print "renaming lots of files len(" + str(len(usrc)) + ") str(" + usrc + ")"
@@ -219,7 +224,7 @@ def update_database(file):
             #print ">" + newname + '<\n'
             print '{0} > renaming({1}=>{2})'.format(format_time(), row['pathnameext'], newname)
             c.execute('''UPDATE files SET status=?, ts_update=?, pathnameext=?
-                WHERE pathnameext=?''', ['updated', datetime.datetime.now(), newname, row['pathnameext']])
+                WHERE pathnameext=?''', ['created', datetime.datetime.now(), newname, row['pathnameext']])
 
     #elif file['event'] == 'IN_CREATE':
     #    print "new directory, nothing to do..."
@@ -227,12 +232,12 @@ def update_database(file):
     conn.commit()
     conn.close()
 
-class BGWorker(threading.Thread):
+class BGWorkerQueuer(threading.Thread):
     def __init__(self, queue, salir):
         threading.Thread.__init__(self)
         self.queue = queue
         self.salir = salir
-        print '{0} > bgworker spawned'.format(format_time())
+        print '{0} > bgworkerQueuer spawned'.format(format_time())
 
     def run(self):
         while not self.salir[0]:
@@ -241,8 +246,65 @@ class BGWorker(threading.Thread):
                 item = self.queue.get()
                 update_database(item)
             time.sleep(1)
-        print '{0} > bgworker ended'.format(format_time())
+        print '{0} > bgworkerQueuer ended'.format(format_time())
         return True
+
+class BGWorkerHasher(threading.Thread):
+
+    def __init__(self, salir):
+        threading.Thread.__init__(self)
+        self.salir = salir
+        print '{0} > bgworkerHasher spawned'.format(format_time())
+
+    def run(self):
+        while not self.salir[0]:
+            if config['db_file'] is not None:
+                pathnameext = self.get_file();
+                if pathnameext is not None:
+                    #print '{0} > found hash candidate({1})'.format(format_time(), pathnameext)
+                    hash = sha1_file(pathnameext)
+                    #print '{0} > ({1}) => hash({2})'.format(format_time(), pathnameext, sha1_file(pathnameext))
+                    self.store_hash(pathnameext, hash)
+            time.sleep(1)
+        print '{0} > bgworkerHasher ended'.format(format_time())
+        return True
+
+    def get_file(self):
+        conn = sqlite3.connect(config['db_file'], detect_types=sqlite3.PARSE_DECLTYPES)
+        conn.row_factory = sqlite3.Row
+        c = conn.cursor()
+
+        c.execute('''SELECT pathnameext, size, sha1, ts_create, ts_update, status
+            FROM files WHERE status=? ORDER BY RANDOM() LIMIT 1''', ['created'])
+        row = c.fetchone()
+        if row is not None:
+            #print '{0} > found hashing candidate ({1})'.format(format_time(), row['pathnameext'])
+            pathnameext = row['pathnameext']
+        else:
+            print '{0} > database already processed'.format(format_time())
+            pathnameext = None
+        conn.commit()
+        conn.close()
+        return pathnameext
+
+    def store_hash(self, pathnameext, hash):
+        conn = sqlite3.connect(config['db_file'], detect_types=sqlite3.PARSE_DECLTYPES)
+        conn.row_factory = sqlite3.Row
+        c = conn.cursor()
+
+        c.execute('''SELECT pathnameext, size, sha1, ts_create, ts_update, status
+            FROM files WHERE pathnameext=? AND status=? LIMIT 1''', [pathnameext, 'created'])
+        row = c.fetchone()
+        if row is None:
+            print '{0} > file({1}) is no longer available in database'.format(format_time(), pathnameext)
+        else:
+            c.execute('''UPDATE files SET sha1=?, status=? WHERE pathnameext=? AND status=?''',
+                [hash, 'updated', pathnameext, 'created'])
+            print '{0} > stored file({1}) hash({2})'.format(format_time(), pathnameext, hash)
+
+        conn.commit()
+        conn.close()
+        return
 
 def main(argv):
     def usage():
@@ -319,11 +381,11 @@ def main(argv):
                     print '{0} > adding({1})'.format(format_time(), pathnameext)
                     c.execute('''INSERT INTO files (pathnameext, size, ts_create, ts_update, status) VALUES
                         (?,?,?,?,?)''', [upathnameext, size, datetime.datetime.now(),
-                        datetime.datetime.now(), 'updated'])
+                        datetime.datetime.now(), 'created'])
                 elif row['size'] != size:
                     print '{0} > updating({1})'.format(format_time(), pathnameext)
                     c.execute('''UPDATE files SET status=?, ts_update=?, size=?
-                        WHERE pathnameext=?''', ['updated', datetime.datetime.now(), size, upathnameext])
+                        WHERE pathnameext=?''', ['created', datetime.datetime.now(), size, upathnameext])
 
         print '{0} > update phase 3 (check for files in db not in fs)'.format(format_time())
         uwatch_path = unicode(config['watch_path'], sys.getfilesystemencoding())
@@ -356,15 +418,20 @@ def main(argv):
             elif size != row['size']:
                 print '{0} > updating({1})'.format(format_time(), pathnameext)
                 c.execute('''UPDATE files SET status=?, ts_update=?, size=?
-                    WHERE pathnameext=?''', ['updated', datetime.datetime.now(), size, upathnameext])
+                    WHERE pathnameext=?''', ['created', datetime.datetime.now(), size, upathnameext])
 
         conn.commit()
         conn.close()
 
     #sys.exit()
 
-    thread_BGWorker = BGWorker(q, salir)
-    thread_BGWorker.start()
+    thread_BGWorkerQueuer = BGWorkerQueuer(q, salir)
+    thread_BGWorkerQueuer.start()
+
+    thread_BGWorkerHasher = BGWorkerHasher(salir)
+    thread_BGWorkerHasher.start()
+
+
 
     wm = pyinotify.WatchManager()
     notifier = pyinotify.Notifier(wm, EventHandler(), timeout=10*1000)
@@ -387,7 +454,7 @@ def main(argv):
             while notifier.check_events():  #loop in case more events appear while we are processing
                 notifier.read_events()
                 notifier.process_events()
-            print '{0} > toc'.format(format_time())
+            #print '{0} > toc'.format(format_time())
         # disabled callback counter from example, not needed
         #notifier.loop(daemonize=False, callback=on_loop_func,
         #    pid_file="/var/run/{config['self']}", stdout='/tmp/stdout.txt')
