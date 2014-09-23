@@ -26,6 +26,10 @@ import sqlite3
 import pyinotify
 from Queue import Queue
 import threading
+import contextlib
+import collections
+from contextlib import contextmanager
+from collections import defaultdict
 
 config = { 'db_file' : None,
     'recursive' : False,
@@ -36,6 +40,223 @@ config = { 'db_file' : None,
 q = Queue()
 
 salir = [False]
+
+class Transaction(object):
+    """A context manager for safe, concurrent access to the database.
+    All SQL commands should be executed through a transaction.
+    """
+    def __init__(self, db):
+        self.db = db
+
+    def __enter__(self):
+        """Begin a transaction. This transaction may be created while
+        another is active in a different thread.
+        """
+        with self.db._tx_stack() as stack:
+            first = not stack
+            stack.append(self)
+        if first:
+            # Beginning a "root" transaction, which corresponds to an
+            # SQLite transaction.
+            self.db._db_lock.acquire()
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        """Complete a transaction. This must be the most recently
+        entered but not yet exited transaction. If it is the last active
+        transaction, the database updates are committed.
+        """
+        with self.db._tx_stack() as stack:
+            assert stack.pop() is self
+            empty = not stack
+        if empty:
+            # Ending a "root" transaction. End the SQLite transaction.
+            self.db._connection().commit()
+            self.db._db_lock.release()
+
+    def query(self, statement, subvals=()):
+        """Execute an SQL statement with substitution values and return
+        a list of rows from the database.
+        """
+        cursor = self.db._connection().execute(statement, subvals)
+        return cursor.fetchall()
+
+    def mutate(self, statement, subvals=()):
+        """Execute an SQL statement with substitution values and return
+        the row ID of the last affected row.
+        """
+        cursor = self.db._connection().execute(statement, subvals)
+        return cursor.lastrowid
+
+    def script(self, statements):
+        """Execute a string containing multiple SQL statements."""
+        self.db._connection().executescript(statements)
+
+
+class Database(object):
+    """A container for Model objects that wraps an SQLite database as
+    the backend.
+    """
+    _models = ()
+    """The Model subclasses representing tables in this database.
+    """
+
+    def __init__(self, path, timeout = 3):
+        self.path = path
+
+        self._connections = {}
+        self._tx_stacks = defaultdict(list)
+
+        self._timeout = timeout
+
+        # A lock to protect the _connections and _tx_stacks maps, which
+        # both map thread IDs to private resources.
+        self._shared_map_lock = threading.Lock()
+
+        # A lock to protect access to the database itself. SQLite does
+        # allow multiple threads to access the database at the same
+        # time, but many users were experiencing crashes related to this
+        # capability: where SQLite was compiled without HAVE_USLEEP, its
+        # backoff algorithm in the case of contention was causing
+        # whole-second sleeps (!) that would trigger its internal
+        # timeout. Using this lock ensures only one SQLite transaction
+        # is active at a time.
+        self._db_lock = threading.Lock()
+
+        # Set up database schema.
+        for model_cls in self._models:
+            self._make_table(model_cls._table, model_cls._fields)
+            self._make_attribute_table(model_cls._flex_table)
+
+    # Primitive access control: connections and transactions.
+
+    def _connection(self):
+        """Get a SQLite connection object to the underlying database.
+        One connection object is created per thread.
+        """
+        thread_id = threading.current_thread().ident
+        with self._shared_map_lock:
+            if thread_id in self._connections:
+                return self._connections[thread_id]
+            else:
+                # Make a new connection.
+                conn = sqlite3.connect(
+                    self.path,
+                    self._timeout,
+                    #beets.config['timeout'].as_number(),
+                )
+
+                # Access SELECT results like dictionaries.
+                conn.row_factory = sqlite3.Row
+
+                self._connections[thread_id] = conn
+                return conn
+
+    @contextlib.contextmanager
+    def _tx_stack(self):
+        """A context manager providing access to the current thread's
+        transaction stack. The context manager synchronizes access to
+        the stack map. Transactions should never migrate across threads.
+        """
+        thread_id = threading.current_thread().ident
+        with self._shared_map_lock:
+            yield self._tx_stacks[thread_id]
+
+    def transaction(self):
+        """Get a :class:`Transaction` object for interacting directly
+        with the underlying SQLite database.
+        """
+        return Transaction(self)
+
+    # Schema setup and migration.
+
+    def _make_table(self, table, fields):
+        """Set up the schema of the database. `fields` is a mapping
+        from field names to `Type`s. Columns are added if necessary.
+        """
+        # Get current schema.
+        with self.transaction() as tx:
+            rows = tx.query('PRAGMA table_info(%s)' % table)
+        current_fields = set([row[1] for row in rows])
+
+        field_names = set(fields.keys())
+        if current_fields.issuperset(field_names):
+            # Table exists and has all the required columns.
+            return
+
+        if not current_fields:
+            # No table exists.
+            columns = []
+            for name, typ in fields.items():
+                columns.append('{0} {1}'.format(name, typ.sql))
+            setup_sql = 'CREATE TABLE {0} ({1});\n'.format(table,
+                                                           ', '.join(columns))
+
+        else:
+            # Table exists does not match the field set.
+            setup_sql = ''
+            for name, typ in fields.items():
+                if name in current_fields:
+                    continue
+                setup_sql += 'ALTER TABLE {0} ADD COLUMN {1} {2};\n'.format(
+                    table, name, typ.sql
+                )
+
+        with self.transaction() as tx:
+            tx.script(setup_sql)
+
+    def _make_attribute_table(self, flex_table):
+        """Create a table and associated index for flexible attributes
+        for the given entity (if they don't exist).
+        """
+        with self.transaction() as tx:
+            tx.script("""
+                CREATE TABLE IF NOT EXISTS {0} (
+                    id INTEGER PRIMARY KEY,
+                    entity_id INTEGER,
+                    key TEXT,
+                    value TEXT,
+                    UNIQUE(entity_id, key) ON CONFLICT REPLACE);
+                CREATE INDEX IF NOT EXISTS {0}_by_entity
+                    ON {0} (entity_id);
+                """.format(flex_table))
+
+    # Querying.
+
+    def _fetch(self, model_cls, query=None, sort=None):
+        """Fetch the objects of type `model_cls` matching the given
+        query. The query may be given as a string, string sequence, a
+        Query object, or None (to fetch everything). `sort` is an
+        `Sort` object.
+        """
+        query = query or TrueQuery()  # A null query.
+        sort = sort or NullSort()  # Unsorted.
+        where, subvals = query.clause()
+        order_by = sort.order_clause()
+
+        sql = ("SELECT * FROM {0} WHERE {1} {2}").format(
+            model_cls._table,
+            where or '1',
+            "ORDER BY {0}".format(order_by) if order_by else '',
+        )
+
+        with self.transaction() as tx:
+            rows = tx.query(sql, subvals)
+
+        return Results(
+            model_cls, rows, self,
+            None if where else query,  # Slow query component.
+            sort if sort.is_slow() else None,  # Slow sort component.
+        )
+
+    def _get(self, model_cls, id):
+        """Get a Model object by its id or None if the id does not
+        exist.
+        """
+        return self._fetch(model_cls, MatchQuery('id', id)).get()
+
+
+
 
 class EventHandler(pyinotify.ProcessEvent):
     def process_IN_CREATE(self, event):
@@ -321,6 +542,19 @@ def main(argv):
         print ' -w, --watch-path <path>  where to look for new files'
         print '                          defaults to \'' + config['watch_path'] + '\''
 
+    database = Database('./db.sqlite')
+    transaction = Transaction(database)
+
+    with database.transaction() as tx:
+        rows1 = tx.query('SELECT * FROM files WHERE status=?', ('created',))
+        rows2 = tx.query('SELECT * FROM files WHERE status=?', ('updated',))
+
+    created = [row[0] for row in rows1]
+    updated = [row[0] for row in rows2]
+
+    print created
+    print updated
+
     try:
         opts, args = getopt.getopt(argv[1:], 'hd:rw:', ['help',
             'db-file=', 'recursive', 'watch-path='])
@@ -431,8 +665,6 @@ def main(argv):
     thread_BGWorkerHasher = BGWorkerHasher(salir)
     thread_BGWorkerHasher.start()
 
-
-
     wm = pyinotify.WatchManager()
     notifier = pyinotify.Notifier(wm, EventHandler(), timeout=10*1000)
     mask = pyinotify.IN_CLOSE_WRITE | pyinotify.IN_MOVED_TO | pyinotify.IN_MOVED_FROM |\
@@ -473,6 +705,14 @@ def main(argv):
 
 if __name__ == "__main__":
     main(sys.argv)
+
+
+
+
+
+
+
+
 
 """
 # using shell commands, getting output
@@ -516,3 +756,4 @@ def on_loop(notifier, counter):
     counter.plusone()
     time.sleep(2)
 """
+
