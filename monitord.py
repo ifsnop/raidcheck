@@ -558,7 +558,7 @@ class BGWorkerStatus(threading.Thread):
                     print "{0} > created({1})/hashed({2})=total({3})".format(format_time(), created, hashed, created+hashed)
                     self.hashed = hashed
                     self.created = created
-            time.sleep(1)
+            time.sleep(10)
         print "{0} > bgworkerStatus ended".format(format_time())
         return True
 
