@@ -34,16 +34,12 @@ from collections import defaultdict
 config = { 'db_file' : None,
     'recursive' : False,
     'watch_path' : './',
-    'self': 'monitord.py'
-    }
+    'self': None,
+    'database': None
+}
 
 q = Queue()
-
 salir = [False]
-
-database = None
-
-transaction = None
 
 class Transaction(object):
     """A context manager for safe, concurrent access to the database.
@@ -78,10 +74,12 @@ class Transaction(object):
             self.db._connection().commit()
             self.db._db_lock.release()
 
-    def query(self, statement, subvals=()):
+    def query(self, statement, subvals=(), debug=False):
         """Execute an SQL statement with substitution values and return
         a list of rows from the database.
         """
+        if debug:
+            print statement, subvals
         cursor = self.db._connection().execute(statement, subvals)
         return cursor.fetchall()
 
@@ -98,12 +96,12 @@ class Transaction(object):
 
 
 class Database(object):
-    """A container for Model objects that wraps an SQLite database as
-    the backend.
-    """
-    _models = ()
-    """The Model subclasses representing tables in this database.
-    """
+    #"""A container for Model objects that wraps an SQLite database as
+    #the backend.
+    #"""
+    #_models = ()
+    #"""The Model subclasses representing tables in this database.
+    #"""
 
     def __init__(self, path, timeout = 3):
         self.path = path
@@ -128,9 +126,9 @@ class Database(object):
         self._db_lock = threading.Lock()
 
         # Set up database schema.
-        for model_cls in self._models:
-            self._make_table(model_cls._table, model_cls._fields)
-            self._make_attribute_table(model_cls._flex_table)
+        #for model_cls in self._models:
+        #    self._make_table(model_cls._table, model_cls._fields)
+        #    self._make_attribute_table(model_cls._flex_table)
 
     # Primitive access control: connections and transactions.
 
@@ -153,6 +151,8 @@ class Database(object):
                 # Access SELECT results like dictionaries.
                 conn.row_factory = sqlite3.Row
 
+                conn.text_factory = str
+
                 self._connections[thread_id] = conn
                 return conn
 
@@ -174,93 +174,90 @@ class Database(object):
 
     # Schema setup and migration.
 
-    def _make_table(self, table, fields):
-        """Set up the schema of the database. `fields` is a mapping
-        from field names to `Type`s. Columns are added if necessary.
-        """
-        # Get current schema.
-        with self.transaction() as tx:
-            rows = tx.query('PRAGMA table_info(%s)' % table)
-        current_fields = set([row[1] for row in rows])
-
-        field_names = set(fields.keys())
-        if current_fields.issuperset(field_names):
-            # Table exists and has all the required columns.
-            return
-
-        if not current_fields:
-            # No table exists.
-            columns = []
-            for name, typ in fields.items():
-                columns.append('{0} {1}'.format(name, typ.sql))
-            setup_sql = 'CREATE TABLE {0} ({1});\n'.format(table,
-                                                           ', '.join(columns))
-
-        else:
-            # Table exists does not match the field set.
-            setup_sql = ''
-            for name, typ in fields.items():
-                if name in current_fields:
-                    continue
-                setup_sql += 'ALTER TABLE {0} ADD COLUMN {1} {2};\n'.format(
-                    table, name, typ.sql
-                )
-
-        with self.transaction() as tx:
-            tx.script(setup_sql)
-
-    def _make_attribute_table(self, flex_table):
-        """Create a table and associated index for flexible attributes
-        for the given entity (if they don't exist).
-        """
-        with self.transaction() as tx:
-            tx.script("""
-                CREATE TABLE IF NOT EXISTS {0} (
-                    id INTEGER PRIMARY KEY,
-                    entity_id INTEGER,
-                    key TEXT,
-                    value TEXT,
-                    UNIQUE(entity_id, key) ON CONFLICT REPLACE);
-                CREATE INDEX IF NOT EXISTS {0}_by_entity
-                    ON {0} (entity_id);
-                """.format(flex_table))
-
+    #def _make_table(self, table, fields):
+    #    """Set up the schema of the database. `fields` is a mapping
+    #    from field names to `Type`s. Columns are added if necessary.
+    #    """
+    #    # Get current schema.
+    #    with self.transaction() as tx:
+    #        rows = tx.query('PRAGMA table_info(%s)' % table)
+    #    current_fields = set([row[1] for row in rows])
+    #
+    #    field_names = set(fields.keys())
+    #    if current_fields.issuperset(field_names):
+    #        # Table exists and has all the required columns.
+    #        return
+    #
+    #    if not current_fields:
+    #        # No table exists.
+    #        columns = []
+    #        for name, typ in fields.items():
+    #            columns.append('{0} {1}'.format(name, typ.sql))
+    #        setup_sql = 'CREATE TABLE {0} ({1});\n'.format(table,
+    #                                                       ', '.join(columns))
+    #
+    #    else:
+    #        # Table exists does not match the field set.
+    #        setup_sql = ''
+    #        for name, typ in fields.items():
+    #            if name in current_fields:
+    #                continue
+    #            setup_sql += 'ALTER TABLE {0} ADD COLUMN {1} {2};\n'.format(
+    #                table, name, typ.sql
+    #            )
+    #
+    #    with self.transaction() as tx:
+    #        tx.script(setup_sql)
+    #
+    #def _make_attribute_table(self, flex_table):
+    #    """Create a table and associated index for flexible attributes
+    #    for the given entity (if they don't exist).
+    #    """
+    #    with self.transaction() as tx:
+    #        tx.script("""
+    #            CREATE TABLE IF NOT EXISTS {0} (
+    #                id INTEGER PRIMARY KEY,
+    #                entity_id INTEGER,
+    #                key TEXT,
+    #                value TEXT,
+    #                UNIQUE(entity_id, key) ON CONFLICT REPLACE);
+    #            CREATE INDEX IF NOT EXISTS {0}_by_entity
+    #                ON {0} (entity_id);
+    #            """.format(flex_table))
+    #
     # Querying.
-
-    def _fetch(self, model_cls, query=None, sort=None):
-        """Fetch the objects of type `model_cls` matching the given
-        query. The query may be given as a string, string sequence, a
-        Query object, or None (to fetch everything). `sort` is an
-        `Sort` object.
-        """
-        query = query or TrueQuery()  # A null query.
-        sort = sort or NullSort()  # Unsorted.
-        where, subvals = query.clause()
-        order_by = sort.order_clause()
-
-        sql = ("SELECT * FROM {0} WHERE {1} {2}").format(
-            model_cls._table,
-            where or '1',
-            "ORDER BY {0}".format(order_by) if order_by else '',
-        )
-
-        with self.transaction() as tx:
-            rows = tx.query(sql, subvals)
-
-        return Results(
-            model_cls, rows, self,
-            None if where else query,  # Slow query component.
-            sort if sort.is_slow() else None,  # Slow sort component.
-        )
-
-    def _get(self, model_cls, id):
-        """Get a Model object by its id or None if the id does not
-        exist.
-        """
-        return self._fetch(model_cls, MatchQuery('id', id)).get()
-
-
-
+    #
+    #def _fetch(self, model_cls, query=None, sort=None):
+    #    """Fetch the objects of type `model_cls` matching the given
+    #    query. The query may be given as a string, string sequence, a
+    #    Query object, or None (to fetch everything). `sort` is an
+    #    `Sort` object.
+    #    """
+    #    query = query or TrueQuery()  # A null query.
+    #    sort = sort or NullSort()  # Unsorted.
+    #    where, subvals = query.clause()
+    #    order_by = sort.order_clause()
+    #
+    #    sql = ("SELECT * FROM {0} WHERE {1} {2}").format(
+    #        model_cls._table,
+    #        where or '1',
+    #        "ORDER BY {0}".format(order_by) if order_by else '',
+    #    )
+    #
+    #    with self.transaction() as tx:
+    #        rows = tx.query(sql, subvals)
+    #
+    #    return Results(
+    #        model_cls, rows, self,
+    #        None if where else query,  # Slow query component.
+    #        sort if sort.is_slow() else None,  # Slow sort component.
+    #    )
+    #
+    #def _get(self, model_cls, id):
+    #    """Get a Model object by its id or None if the id does not
+    #    exist.
+    #    """
+    #    return self._fetch(model_cls, MatchQuery('id', id)).get()
 
 class EventHandler(pyinotify.ProcessEvent):
     def process_IN_CREATE(self, event):
@@ -294,7 +291,7 @@ class EventHandler(pyinotify.ProcessEvent):
         #<Event dir=False mask=0x8 maskname=IN_CLOSE_WRITE name=q.qw11 path=/tmp/l pathname=/tmp/l/q.qw11 wd=4 >
         #sys.stdout.write("=process=" + format_time() + " " + pprint.pformat(event) + '\n')
 
-        file = {'nameext' : event.name,
+        f = {'nameext' : event.name,
                 'path' : os.path.normpath(event.path),
                 'pathnameext' : os.path.normpath(event.pathname),
                 'name' : os.path.splitext(event.name)[0],
@@ -306,28 +303,41 @@ class EventHandler(pyinotify.ProcessEvent):
 
         # only sometimes when maskname==IN_MOVED_TO
         if hasattr(event, 'src_pathname'):
-            file['src'] = event.src_pathname
+            f['src'] = event.src_pathname
 
-        try:
-            filestat = os.stat(file['pathnameext'])
-            file['size'] = filestat.st_size
-        except OSError as e:
-            # print e.strerror
-            if e.errno != errno.ENOENT: # ignore file not found
-                print "!!!!!!!!!!!!!!!!!!!!!!!!raised error!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
-                raise
-            else:
-                filestat = None
-                #print "some file/dir was deleted, so no stat possible"
+        g = get_file_stat(f['pathnameext'])
+        f = dict(f.items() + g.items())
 
         print '{0} o file ({1}) size ({2}) with action ({3})'.format(
                 format_time(),
-                file['nameext'],
-                format_size(file['size']),
-                file['event'])
+                f['nameext'],
+                format_size(f['size']),
+                f['event'])
 
-        q.put(file)
+        q.put(f)
         return True
+
+def get_file_stat(file):
+
+    f = dict()
+    f['size'] = -1
+
+    try:
+        s = os.stat(file)
+        f['size'] = s.st_size
+        f['atime'] = str(datetime.datetime.fromtimestamp(s.st_atime))
+        f['mtime'] = str(datetime.datetime.fromtimestamp(s.st_mtime))
+        f['ctime'] = str(datetime.datetime.fromtimestamp(s.st_ctime))
+    except OSError as e:
+        # print e.strerror
+        if e.errno != errno.ENOENT: # ignore file not found
+            print "!!!!!!!!!!!!!!!!!!!!!!!!raised error!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+            raise
+        #else:
+        #    f = None
+            #print "some file/dir was deleted, so no stat possible"
+
+    return f
 
 def format_time():
     t = datetime.datetime.now()
@@ -392,77 +402,78 @@ class BGWorkerQueuer(threading.Thread):
         print '{0} > bgworkerQueuer ended'.format(format_time())
         return True
 
-    def update_database(self, file):
-        if config['db_file'] is None:
-            return True
+    def update_database(self, f):
+        src = None
 
-        if file['event'] == 'IN_DELETE_SELF': return True
-        if file['event'][:9] == 'IN_CREATE': return True
-        if file['event'][:9] == 'IN_DELETE' and file['dir']: return True
-        #if file['event'][:9] == 'IN_CREATE' and file['dir']: return True
+        if f['event'] == 'IN_DELETE_SELF': return True
+        if f['event'][:9] == 'IN_CREATE': return True
+        if f['event'][:9] == 'IN_DELETE' and f['dir']: return True
+        if f['event'] == 'IN_MOVED_FROM': return True
 
-        print '{0} i file ({1}) size ({2}) with action ({3})'.format(
-            format_time(),
-            file['nameext'],
-            format_size(file['size']),
-            file['event'])
+        #print '{0} i1 file ({1}) size ({2}) with action ({3})'.format(
+        #    format_time(), f['nameext'], format_size(f['size']), f['event'])
 
-        upathnameext = unicode(file['pathnameext'], sys.getfilesystemencoding())
-        if 'src' in file:
-            usrc = unicode(file['src'], sys.getfilesystemencoding())
-        #else:
-        #    file['event'] = 'IN_CLOSE_WRITE'
+        if 'src' in f:
+            src = f['src']
 
-        if file['event'] == 'IN_MOVED_TO' and 'src' not in file:
-            file['event'] = 'IN_CLOSE_WRITE'
+        if f['event'] == 'IN_MOVED_TO' and 'src' not in f:
+            f['event'] = 'IN_CLOSE_WRITE'
 
-        #sys.stdout.write(format_time() + pprint.pformat(file) + '\n')
-        #print database
+        #print '{0} i2 file ({1}) size ({2}) with action ({3})'.format(
+        #    format_time(), f['nameext'], format_size(f['size']), f['event'])
 
         with self.database.transaction() as tx:
 
-            if file['event'] == 'IN_CLOSE_WRITE':
-                rows = tx.query('''SELECT pathnameext, size, sha1, ts_create, ts_update, status
-                    FROM files WHERE pathnameext=?''', [upathnameext])
+            if f['event'] == 'IN_CLOSE_WRITE':
+                rows = tx.query("SELECT pathnameext FROM files WHERE pathnameext=?", (f['pathnameext'],))
                 if not rows:
-                    print '{0} > adding({1})'.format(format_time(), file['pathnameext'])
-                    tx.query('''INSERT INTO files (pathnameext, size, ts_create, ts_update, status) VALUES
-                        (?,?,?,?,?)''', [upathnameext, file['size'], datetime.datetime.now(),
-                        datetime.datetime.now(), 'created'])
+                    print '{0} > adding({1})'.format(format_time(), f['pathnameext'])
+                    tx.query("INSERT INTO files (pathnameext, size, hash, atime, mtime, ctime, ts_create, ts_update, status) VALUES (?,?,?,?,?,?,?,?,?)",
+                        (f['pathnameext'], f['size'], None, f['atime'], f['mtime'], f['ctime'], datetime.datetime.now(), datetime.datetime.now(), 'created',))
                 else:
-                    print '{0} > updating({1})'.format(format_time(), file['pathnameext'])
-                    tx.query('''UPDATE files SET status=?, ts_update=?, size=?
-                        WHERE pathnameext=?''', ['created', datetime.datetime.now(), file['size'], upathnameext])
+                    print '{0} > updating({1})'.format(format_time(), f['pathnameext'])
+                    tx.query("UPDATE files SET size=?, hash=?, atime=?, mtime=?, ctime=?, ts_update=?, status=? WHERE pathnameext=?",
+                    (f['size'], None, f['atime'], f['mtime'], f['ctime'], datetime.datetime.now(), 'created', f['pathnameext'],))
 
-            elif file['event'][:9] == 'IN_DELETE' or file['event'] == 'IN_MOVED_FROM':
-                print '{0} > deleting({1})'.format(format_time(), file['pathnameext'])
-                tx.query('''DELETE FROM files WHERE pathnameext=?''', [upathnameext])
+            elif f['event'][:9] == 'IN_DELETE': #or f['event'] == 'IN_MOVED_FROM':
+                print '{0} > deleting({1})'.format(format_time(), f['pathnameext'])
+                tx.query("DELETE FROM files WHERE pathnameext=?", (f['pathnameext'],))
 
-            elif file['event'] == 'IN_MOVED_TO':
-                rows = tx.query('''SELECT pathnameext, size, sha1, ts_create, ts_update, status
-                    FROM files WHERE pathnameext=?''', [usrc])
-                if not rows:
-                    print '{0} > renaming({1}=>{2})'.format(format_time(), file['src'], file['pathnameext'])
-                    tx.query('''UPDATE files SET status=?, ts_update=?, pathnameext=?
-                        WHERE pathnameext=?''', ['created', datetime.datetime.now(), upathnameext, usrc])
+            elif f['event'] == 'IN_MOVED_TO':
+                rows = tx.query("SELECT pathnameext, size, hash, ts_create, ts_update, status FROM files WHERE pathnameext=?",
+                    (f['src'],))
+                if rows:
+                    print '{0} > renaming({1}=>{2})'.format(format_time(), f['src'], f['pathnameext'])
+                    tx.query("DELETE FROM files WHERE pathnameext=?", (f['pathnameext'],))
+                    tx.query("UPDATE files SET ts_update=?, pathnameext=? WHERE pathnameext=?",
+                        (datetime.datetime.now(), f['pathnameext'], f['src'],))
                 else:
-                    print '{0} > adding({1})'.format(format_time(), file['pathnameext'])
-                    tx.query('''INSERT INTO files (pathnameext, size, ts_create, ts_update, status) VALUES
-                        (?,?,?,?,?)''', [upathnameext, file['size'], datetime.datetime.now(),
-                        datetime.datetime.now(), 'created'])
+                    print '{0} > adding({1})'.format(format_time(), f['pathnameext'])
+                    tx.query("INSERT INTO files (pathnameext, size, hash, atime, mtime, ctime, ts_create, ts_update, status) VALUES (?,?,?,?,?,?,?,?,?)",
+                        (f['pathnameext'], f['size'], None, f['atime'], f['mtime'], f['ctime'], datetime.datetime.now(), datetime.datetime.now(), 'created',))
 
-            elif file['event'] == 'IN_MOVED_TO|IN_ISDIR':
-                #print "renaming lots of files len(" + str(len(usrc)) + ") str(" + usrc + ")"
-                #print "SELECT pathnameext, size, sha1, ts_create, ts_update, status FROM files WHERE SUBSTR(pathnameext, 0," + str(len(usrc)+2) + ")='" + usrc + "/'"
-                rows = tx.query('''SELECT pathnameext, size, sha1, ts_create, ts_update, status
-                    FROM files WHERE SUBSTR(pathnameext, 0, ?)=?''', [len(usrc)+2, usrc + '/'])
+            elif f['event'] == 'IN_MOVED_TO|IN_ISDIR':
+                rows = tx.query("SELECT pathnameext, size, hash, ts_create, ts_update, status FROM files WHERE SUBSTR(pathnameext, 0, ?)=?",
+                    (len(src)+2, src + '/',))
                 for row in rows:
                     #print "renamed dir, update inside files dir(" + usrc + ') upathnameext(' + upathnameext + ') row(' + row['pathnameext'] + ') len(usrc)=' + str(len(usrc)) + '\n'
-                    newname =  upathnameext +  '/' + row['pathnameext'][len(usrc)+1:]
+                    newname =  f['pathnameext'] +  '/' + row['pathnameext'][len(src)+1:]
                     #print ">" + newname + '<\n'
                     print '{0} > renaming({1}=>{2})'.format(format_time(), row['pathnameext'], newname)
-                    tx.query('''UPDATE files SET status=?, ts_update=?, pathnameext=?
-                        WHERE pathnameext=?''', ['created', datetime.datetime.now(), newname, row['pathnameext']])
+                    tx.query("UPDATE files SET ts_update=?, pathnameext=? WHERE pathnameext=?",
+                        (datetime.datetime.now(), newname, row['pathnameext'],))
+
+#                    print "{0} > adding({1})".format(format_time(), pathnameext)
+#                    tx.query("INSERT INTO files (pathnameext, size, hash, atime, mtime, ctime, ts_create, ts_update, status) VALUES (?,?,?,?,?,?,?,?,?)",
+#                        (pathnameext, f['size'], None, f['atime'], f['mtime'], f['ctime'],
+#                        datetime.datetime.now(), datetime.datetime.now(), 'created',))
+#                elif rows[0]['size'] != f['size'] or rows[0]['mtime'] != f['mtime'] or rows[0]['ctime'] != f['ctime']:
+#                    print "{0} > updating({1})".format(format_time(), pathnameext)
+
+
+
+
+
 
             #elif file['event'] == 'IN_CREATE':
             #    print "new directory, nothing to do..."
@@ -477,25 +488,27 @@ class BGWorkerHasher(threading.Thread):
 
     def run(self):
         while not self.salir[0]:
-            if config['db_file'] is not None:
-                pathnameext = self.get_file();
-                if pathnameext is not None:
-                    #print '{0} > found hash candidate({1})'.format(format_time(), pathnameext)
-                    hash = sha1_file(pathnameext)
-                    #print '{0} > ({1}) => hash({2})'.format(format_time(), pathnameext, sha1_file(pathnameext))
-                    self.store_hash(pathnameext, hash)
-                else:
-                    time.sleep(1)
+            pathnameext = self.get_file();
+            if pathnameext is not None:
+                #print '{0} > found hash candidate({1})'.format(format_time(), repr(pathnameext))
+                #print '{0} > found hash candidate({1})'.format(format_time(), pathnameext)
+                hash = sha1_file(pathnameext)
+                #print '{0} > ({1}) => hash({2})'.format(format_time(), pathnameext, hash)
+                self.store_hash(pathnameext, hash)
+            else:
+                time.sleep(1)
         print '{0} > bgworkerHasher ended'.format(format_time())
         return True
 
     def get_file(self):
         with self.database.transaction() as tx:
-            rows = tx.query('''SELECT pathnameext, size, sha1, ts_create, ts_update, status
+            rows = tx.query('''SELECT pathnameext, size, hash, ts_create, ts_update, status
                 FROM files WHERE status=? ORDER BY RANDOM() LIMIT 1''', ['created'])
             if rows:
                 #print '{0} > found hashing candidate ({1})'.format(format_time(), row['pathnameext'])
                 pathnameext = rows[0]['pathnameext']
+                #pathnameext = pathnameext.encode('UTF-8')
+                #print pathnameext
             else:
                 #print '{0} > database already processed'.format(format_time())
                 pathnameext = None
@@ -510,19 +523,102 @@ class BGWorkerHasher(threading.Thread):
         #c = conn.cursor()
         with self.database.transaction() as tx:
 
-            rows = tx.query('''SELECT pathnameext, size, sha1, ts_create, ts_update, status
+            rows = tx.query('''SELECT pathnameext, size, hash, ts_create, ts_update, status
                 FROM files WHERE pathnameext=? AND status=? LIMIT 1''', [pathnameext, 'created'])
             #row = c.fetchone()
             if not rows:
                 print '{0} > file({1}) is no longer available in database'.format(format_time(), pathnameext)
             else:
-                tx.query('''UPDATE files SET sha1=?, status=? WHERE pathnameext=? AND status=?''',
-                [hash, 'updated', pathnameext, 'created'])
-                print '{0} > stored file({1}) hash({2})'.format(format_time(), pathnameext, hash)
+                tx.query('''UPDATE files SET hash=?, status=? WHERE pathnameext=? AND status=?''',
+                [hash, 'hashed', pathnameext, 'created'])
+                print '{0} > stored file({1}) with hash({2})'.format(format_time(), pathnameext, hash)
 
         #conn.commit()
         #conn.close()
         return
+
+class BGWorkerStatus(threading.Thread):
+
+    def __init__(self, salir, database):
+        threading.Thread.__init__(self)
+        self.salir = salir
+        self.database = database
+        self.created = -1
+        self.hashed = -1
+        print '{0} > bgworkerStatus spawned'.format(format_time())
+
+    def run(self):
+        while not self.salir[0]:
+            with self.database.transaction() as tx:
+                rows1 = tx.query("SELECT COUNT(*) FROM files WHERE status=?", ('created',))
+                rows2 = tx.query("SELECT COUNT(*) FROM files WHERE status=?", ('hashed',))
+                created = rows1[0][0] #[row[0] for row in rows1]
+                hashed = rows2[0][0] #[row[0] for row in rows2]
+                if hashed != self.hashed or created != self.created:
+                    print "{0} > created({1})/hashed({2})=total({3})".format(format_time(), created, hashed, created+hashed)
+                    self.hashed = hashed
+                    self.created = created
+            time.sleep(1)
+        print "{0} > bgworkerStatus ended".format(format_time())
+        return True
+
+def stage1():
+
+    print "{0} > update phase 1 (check for table)".format(format_time())
+    with config['database'].transaction() as tx:
+        rows = tx.query("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='files'")
+        if rows[0][0] != 1:
+            tx.query("CREATE TABLE files "
+                "(pathnameext text, size integer, hash text, atime timestamp, "
+                "mtime timestamp, ctime timestamp, ts_create timestamp, "
+                "ts_update timestamp, status text, UNIQUE (pathnameext))")
+    return True
+
+def stage2():
+
+    print "{0} > update phase 2 (check for files in fs not in db)".format(format_time())
+    with config['database'].transaction() as tx:
+        for root, dirs, files in os.walk(config['watch_path'], topdown=True):
+            for name in files:
+                pathnameext = os.path.join(root, name)
+                f = get_file_stat(pathnameext)
+                rows = tx.query("SELECT pathnameext, size, atime, mtime, ctime, ts_create, ts_update FROM files WHERE pathnameext=?",
+                    (pathnameext,))
+                if not rows:
+                    print "{0} > adding({1})".format(format_time(), pathnameext)
+                    tx.query("INSERT INTO files (pathnameext, size, hash, atime, mtime, ctime, ts_create, ts_update, status) VALUES (?,?,?,?,?,?,?,?,?)",
+                        (pathnameext, f['size'], None, f['atime'], f['mtime'], f['ctime'],
+                        datetime.datetime.now(), datetime.datetime.now(), 'created',))
+                elif rows[0]['size'] != f['size'] or rows[0]['mtime'] != f['mtime'] or rows[0]['ctime'] != f['ctime']:
+                    print "{0} > updating({1})".format(format_time(), pathnameext)
+                    tx.query("UPDATE files SET size=?, hash=?, atime=?, mtime=?, ctime=?, ts_update=?, status=? WHERE pathnameext=?",
+                        (f['size'], None, f['atime'], f['mtime'], f['ctime'], datetime.datetime.now(), 'created', pathnameext,))
+
+    return True
+
+def stage3():
+    print '{0} > update phase 3 (check for files in db not in fs)'.format(format_time())
+
+    #uwatch_path = unicode(config['watch_path'], sys.getfilesystemencoding())
+    #watch_path = config['watch_path']
+    #"renamed dir, update inside files dir(" + usrc + ') upathnameext(' + upathnameext + ') row(' + row['pathnameext'] + ') len(usrc)=' + str(len(usrc)) + '\n'
+    #newname =  upathnameext +  '/' + row['pathnameext'][len(usrc)+1:]
+    with config['database'].transaction() as tx:
+        rows = tx.query("SELECT pathnameext, size, hash, atime, mtime, ctime, ts_create, ts_update, status FROM files WHERE SUBSTR(pathnameext, 0, ?)=?",
+            [len(config['watch_path']) + 2, config['watch_path'] + '/'])
+        for row in rows:
+            f = get_file_stat(row['pathnameext'])
+            if f['size'] == -1:
+                print '{0} > deleting({1})'.format(format_time(), row['pathnameext'])
+                tx.query("DELETE FROM files WHERE pathnameext=?",
+                    (row['pathnameext'],))
+            elif f['size'] != row['size'] or f['mtime'] != row['mtime'] or f['ctime'] != row['ctime']:
+                print '{0} > updating({1})'.format(format_time(), pathnameext)
+                tx.query("UPDATE files SET size=?, hash=?, atime=?, mtime=?, ctime=?, ts_update=?, status=? WHERE pathnameext=?",
+                    (f['size'], None, f['atime'], f['mtime'], f['ctime'],
+                    datetime.datetime.now(), 'created', row['pathnameext'],))
+
+    return
 
 def main(argv):
     def usage():
@@ -532,7 +628,7 @@ def main(argv):
         print
         print 'Starts automatic filesystem monitoring'
         print
-        print ' -d, --db-file            sqlite path to store sha1 signatures'
+        print ' -d, --db-file            sqlite path to store hash(sha1) signatures'
         print '                          default to \'' + str(config['db_file']) + '\''
         print ' -r, --recursive          descent into subdirectories'
         print '                          defaults to', str(config['recursive'])
@@ -563,125 +659,27 @@ def main(argv):
     print '{0} > options: recursive({1})'.format(format_time(), config['recursive'])
     print '{0} > options: watch-path({1}) free_bytes({2})'.format(format_time(), config['watch_path'], format_size(get_free_space_bytes(config['watch_path'])))
 
-    if config['db_file'] is not None:
+    if config['db_file'] is None:
+        usage()
+        sys.exit()
 
-        database = Database(config['db_file'])
-        transaction = Transaction(database)
+    config['database'] = Database(config['db_file'])
+    transaction = Transaction(config['database'])
 
-        print '{0} > update phase 1 (check for table)'.format(format_time())
-        #conn = sqlite3.connect(config['db_file'], detect_types=sqlite3.PARSE_DECLTYPES)
-        #conn.row_factory = sqlite3.Row
-        #c = conn.cursor()
-        #c.execute("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='files'")
-        #if c.fetchone()[0] != 1:
-        #    c.execute('''CREATE TABLE files
-        #        (pathnameext text, size integer, sha1 text, ts_create timestamp,
-        #        ts_update timestamp, status text, UNIQUE (pathnameext))''')
-        with database.transaction() as tx:
-            rows = tx.query("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='files'")
-            if rows[0][0] != 1:
-                tx.query('''CREATE TABLE files
-                (pathnameext text, size integer, sha1 text, ts_create timestamp,
-                ts_update timestamp, status text, UNIQUE (pathnameext))''')
-
-
-            rows1 = tx.query('SELECT * FROM files WHERE status=?', ('created',))
-            rows2 = tx.query('SELECT * FROM files WHERE status=?', ('updated',))
-
-            created = [row[0] for row in rows1]
-            updated = [row[0] for row in rows2]
-
-            print '{0} > created({1})'.format(format_time(), created)
-            print '{0} > updated({1})'.format(format_time(), updated)
-
-
-            print '{0} > update phase 2 (check for files in fs not in db)'.format(format_time())
-            for root, dirs, files in os.walk(config['watch_path'], topdown=True):
-                for name in files:
-                    pathnameext = os.path.join(root, name)
-                    upathnameext = unicode(pathnameext, sys.getfilesystemencoding())
-                    size = -1
-                    try:
-                        filestat = os.stat(pathnameext)
-                        size = filestat.st_size
-                    except OSError as e:
-                        print e.strerror
-                        if e.errno != errno.ENOENT: # ignore file not found
-                            raise
-                        #else:
-                            #print "some file/dir was deleted, so no stat possible"
-                    if size == -1:
-                        break
-
-                    #print pathnameext + ":" + str(size)
-                    #c.execute('''SELECT pathnameext, size FROM files WHERE pathnameext=?''', [upathnameext])
-                    #row = c.fetchone()
-                    rows = tx.query('''SELECT pathnameext, size FROM files WHERE pathnameext=?''', [upathnameext])
-                    #if row is None:
-                    #    print '{0} > adding({1})'.format(format_time(), pathnameext)
-                    #    c.execute('''INSERT INTO files (pathnameext, size, ts_create, ts_update, status) VALUES
-                    #        (?,?,?,?,?)''', [upathnameext, size, datetime.datetime.now(),
-                    #        datetime.datetime.now(), 'created'])
-                    #elif row['size'] != size:
-                    #    print '{0} > updating({1})'.format(format_time(), pathnameext)
-                    #    c.execute('''UPDATE files SET status=?, ts_update=?, size=?
-                    #        WHERE pathnameext=?''', ['created', datetime.datetime.now(), size, upathnameext])
-                    if not rows:
-                        print '{0} > adding({1})'.format(format_time(), pathnameext)
-                        tx.query('''INSERT INTO files (pathnameext, size, ts_create, ts_update, status) VALUES
-                            (?,?,?,?,?)''', [upathnameext, size, datetime.datetime.now(),
-                            datetime.datetime.now(), 'created'])
-                    elif rows[0]['size'] != size:
-                        print '{0} > updating({1})'.format(format_time(), pathnameext)
-                        tx.query('''UPDATE files SET status=?, ts_update=?, size=?
-                            WHERE pathnameext=?''', ['created', datetime.datetime.now(), size, upathnameext])
-
-            print '{0} > update phase 3 (check for files in db not in fs)'.format(format_time())
-            uwatch_path = unicode(config['watch_path'], sys.getfilesystemencoding())
-            #c.execute('''SELECT pathnameext, size, sha1, ts_create, ts_update, status
-            #    FROM files WHERE SUBSTR(pathnameext, 0, ?)=?''', [len(uwatch_path)+2, uwatch_path + '/'])
-            #rows = c.fetchall()
-            #for row in rows:
-            #print row['pathnameext']
-            #"renamed dir, update inside files dir(" + usrc + ') upathnameext(' + upathnameext + ') row(' + row['pathnameext'] + ') len(usrc)=' + str(len(usrc)) + '\n'
-            #newname =  upathnameext +  '/' + row['pathnameext'][len(usrc)+1:]
-            rows = tx.query('''SELECT pathnameext, size, sha1, ts_create, ts_update, status
-                FROM files WHERE SUBSTR(pathnameext, 0, ?)=?''', [len(uwatch_path)+2, uwatch_path + '/'])
-            for row in rows:
-                size = -1
-                try:
-                    filestat = os.stat(row['pathnameext'])
-                    size = filestat.st_size
-                except OSError as e:
-                    pass
-                    #if e.errno != errno.ENOENT: # ignore file not found
-                    #    raise
-                    #else:
-                    #    print "some file/dir was deleted, so no stat possible"
-
-                pathnameext = unicode(row['pathnameext']).encode('utf8')
-                upathnameext = row['pathnameext']
-
-                if size == -1:
-                    #delete from database
-                    print '{0} > deleting({1})'.format(format_time(), pathnameext)
-                    tx.query('''DELETE FROM files WHERE pathnameext=?''', [upathnameext])
-                # comprobar size!!!!
-                elif size != row['size']:
-                    print '{0} > updating({1})'.format(format_time(), pathnameext)
-                    tx.query('''UPDATE files SET status=?, ts_update=?, size=?
-                        WHERE pathnameext=?''', ['created', datetime.datetime.now(), size, upathnameext])
-
-        #conn.commit()
-        #conn.close()
+    stage1()
+    stage2()
+    stage3()
 
     #sys.exit()
 
-    thread_BGWorkerQueuer = BGWorkerQueuer(q, salir, database)
+    thread_BGWorkerQueuer = BGWorkerQueuer(q, salir, config['database'])
     thread_BGWorkerQueuer.start()
 
-    thread_BGWorkerHasher = BGWorkerHasher(salir, database)
+    thread_BGWorkerHasher = BGWorkerHasher(salir, config['database'])
     thread_BGWorkerHasher.start()
+
+    thread_BGWorkerStatus = BGWorkerStatus(salir, config['database'])
+    thread_BGWorkerStatus.start()
 
     wm = pyinotify.WatchManager()
     notifier = pyinotify.Notifier(wm, EventHandler(), timeout=10*1000)
@@ -720,6 +718,9 @@ def main(argv):
 
     notifier.stop()
     return
+
+
+
 
 if __name__ == "__main__":
     main(sys.argv)
