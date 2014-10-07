@@ -308,11 +308,8 @@ class EventHandler(pyinotify.ProcessEvent):
         g = get_file_stat(f['pathnameext'])
         f = dict(f.items() + g.items())
 
-        print '{0} o file ({1}) size ({2}) with action ({3})'.format(
-                format_time(),
-                f['nameext'],
-                format_size(f['size']),
-                f['event'])
+        #print '{0} o file ({1}) size ({2}) with action ({3})'.format(
+        #        format_time(), f['nameext'], format_size(f['size']), f['event'])
 
         q.put(f)
         return True
@@ -445,8 +442,8 @@ class BGWorkerQueuer(threading.Thread):
                 if rows:
                     print '{0} > renaming({1}=>{2})'.format(format_time(), f['src'], f['pathnameext'])
                     tx.query("DELETE FROM files WHERE pathnameext=?", (f['pathnameext'],))
-                    tx.query("UPDATE files SET ts_update=?, pathnameext=? WHERE pathnameext=?",
-                        (datetime.datetime.now(), f['pathnameext'], f['src'],))
+                    tx.query("UPDATE files SET atime=?, mtime=?, ctime=?, ts_update=?, pathnameext=? WHERE pathnameext=?",
+                        (f['atime'], f['mtime'], f['ctime'], datetime.datetime.now(), f['pathnameext'], f['src'],))
                 else:
                     print '{0} > adding({1})'.format(format_time(), f['pathnameext'])
                     tx.query("INSERT INTO files (pathnameext, size, hash, atime, mtime, ctime, ts_create, ts_update, status) VALUES (?,?,?,?,?,?,?,?,?)",
