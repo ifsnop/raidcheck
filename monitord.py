@@ -345,6 +345,8 @@ def format_time():
 
 def format_size(num):
     """Human friendly file size"""
+    if num is None:
+        num = 0
     unit_list = zip(['B', 'Ki', 'Mi', 'Gi', 'Ti', 'Pi'], [0, 0, 1, 2, 2, 2])
     if num > 1:
         exponent = min(int(log(num, 1024)), len(unit_list) - 1)
@@ -547,12 +549,14 @@ class BGWorkerStatus(threading.Thread):
     def run(self):
         while not self.salir[0]:
             with self.database.transaction() as tx:
-                rows1 = tx.query("SELECT COUNT(*) FROM files WHERE status=?", ('created',))
-                rows2 = tx.query("SELECT COUNT(*) FROM files WHERE status=?", ('hashed',))
-                created = rows1[0][0] #[row[0] for row in rows1]
-                hashed = rows2[0][0] #[row[0] for row in rows2]
+                rowsc = tx.query("SELECT COUNT(*) as count, SUM(size) as size FROM files WHERE status=?", ('created',))
+                rowsh = tx.query("SELECT COUNT(*) as count, SUM(size) as size FROM files WHERE status=?", ('hashed',))
+                created = rowsc[0]['count'] #[row[0] for row in rows1]
+                hashed = rowsh[0]['count'] #[row[0] for row in rows2]
                 if hashed != self.hashed or created != self.created:
-                    print "{0} > created({1})/hashed({2})=total({3})".format(format_time(), created, hashed, created+hashed)
+                    print "{0} > {1} created using {2}/{3} hashed using {4}".format(
+                        format_time(), created, format_size(rowsc[0]['size']),
+                        hashed, format_size(rowsh[0]['size']))
                     self.hashed = hashed
                     self.created = created
             time.sleep(10)
@@ -567,7 +571,7 @@ def stage1():
         if rows[0][0] != 1:
             tx.query("CREATE TABLE files "
                 "(pathnameext text, size integer, hash text, atime timestamp, "
-                "mtime timestamp, ctime timestamp, ts_create timestamp, "
+                "mtime timestamp, ctime timestamp, verified integer, ts_create timestamp, "
                 "ts_update timestamp, status text, UNIQUE (pathnameext))")
     return True
 
@@ -579,17 +583,17 @@ def stage2():
             for name in files:
                 pathnameext = os.path.join(root, name)
                 f = get_file_stat(pathnameext)
-                rows = tx.query("SELECT pathnameext, size, atime, mtime, ctime, ts_create, ts_update FROM files WHERE pathnameext=?",
+                rows = tx.query("SELECT pathnameext, size, atime, mtime, ctime, verified, ts_create, ts_update FROM files WHERE pathnameext=?",
                     (pathnameext,))
                 if not rows:
                     print "{0} > adding({1})".format(format_time(), pathnameext)
-                    tx.query("INSERT INTO files (pathnameext, size, hash, atime, mtime, ctime, ts_create, ts_update, status) VALUES (?,?,?,?,?,?,?,?,?)",
-                        (pathnameext, f['size'], None, f['atime'], f['mtime'], f['ctime'],
+                    tx.query("INSERT INTO files (pathnameext, size, hash, atime, mtime, ctime, verified, ts_create, ts_update, status) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                        (pathnameext, f['size'], None, f['atime'], f['mtime'], f['ctime'], 0,
                         datetime.datetime.now(), datetime.datetime.now(), 'created',))
                 elif rows[0]['size'] != f['size'] or rows[0]['mtime'] != f['mtime'] or rows[0]['ctime'] != f['ctime']:
                     print "{0} > updating({1})".format(format_time(), pathnameext)
-                    tx.query("UPDATE files SET size=?, hash=?, atime=?, mtime=?, ctime=?, ts_update=?, status=? WHERE pathnameext=?",
-                        (f['size'], None, f['atime'], f['mtime'], f['ctime'], datetime.datetime.now(), 'created', pathnameext,))
+                    tx.query("UPDATE files SET size=?, hash=?, atime=?, mtime=?, ctime=?, verified=?, ts_update=?, status=? WHERE pathnameext=?",
+                        (f['size'], None, f['atime'], f['mtime'], f['ctime'], 0, datetime.datetime.now(), 'created', pathnameext,))
 
     return True
 
@@ -601,7 +605,7 @@ def stage3():
     #"renamed dir, update inside files dir(" + usrc + ') upathnameext(' + upathnameext + ') row(' + row['pathnameext'] + ') len(usrc)=' + str(len(usrc)) + '\n'
     #newname =  upathnameext +  '/' + row['pathnameext'][len(usrc)+1:]
     with config['database'].transaction() as tx:
-        rows = tx.query("SELECT pathnameext, size, hash, atime, mtime, ctime, ts_create, ts_update, status FROM files WHERE SUBSTR(pathnameext, 0, ?)=?",
+        rows = tx.query("SELECT pathnameext, size, hash, atime, mtime, ctime, verified, ts_create, ts_update, status FROM files WHERE SUBSTR(pathnameext, 0, ?)=?",
             [len(config['watch_path']) + 2, config['watch_path'] + '/'])
         for row in rows:
             f = get_file_stat(row['pathnameext'])
@@ -611,9 +615,16 @@ def stage3():
                     (row['pathnameext'],))
             elif f['size'] != row['size'] or f['mtime'] != row['mtime'] or f['ctime'] != row['ctime']:
                 print '{0} > updating({1})'.format(format_time(), pathnameext)
-                tx.query("UPDATE files SET size=?, hash=?, atime=?, mtime=?, ctime=?, ts_update=?, status=? WHERE pathnameext=?",
-                    (f['size'], None, f['atime'], f['mtime'], f['ctime'],
+                tx.query("UPDATE files SET size=?, hash=?, atime=?, mtime=?, ctime=?, verified=?, ts_update=?, status=? WHERE pathnameext=?",
+                    (f['size'], None, f['atime'], f['mtime'], f['ctime'], 0,
                     datetime.datetime.now(), 'created', row['pathnameext'],))
+        rows = tx.query("SELECT COUNT(*) FROM files WHERE SUBSTR(pathnameext, 0, ?)!=?",
+            [len(config['watch_path']) + 2, config['watch_path'] + '/'])
+        delete = [row[0] for row in rows]
+        if (rows[0][0]!=0):
+            print '{0} > deleting in db not in fs because of watch dir change({1})'.format(format_time(), rows[0][0])
+        rows = tx.query("DELETE FROM files WHERE SUBSTR(pathnameext, 0, ?)!=?",
+            [len(config['watch_path']) + 2, config['watch_path'] + '/'])
 
     return
 
