@@ -35,7 +35,8 @@ config = { 'db_file' : None,
     'recursive' : False,
     'watch_path' : './',
     'self': None,
-    'database': None
+    'database': None,
+    'vacuum': False
 }
 
 q = Queue()
@@ -613,18 +614,23 @@ def stage3():
                 print '{0} > deleting({1})'.format(format_time(), row['pathnameext'])
                 tx.query("DELETE FROM files WHERE pathnameext=?",
                     (row['pathnameext'],))
+                config['vacuum'] = True
             elif f['size'] != row['size'] or f['mtime'] != row['mtime'] or f['ctime'] != row['ctime']:
                 print '{0} > updating({1})'.format(format_time(), pathnameext)
                 tx.query("UPDATE files SET size=?, hash=?, atime=?, mtime=?, ctime=?, verified=?, ts_update=?, status=? WHERE pathnameext=?",
                     (f['size'], None, f['atime'], f['mtime'], f['ctime'], 0,
                     datetime.datetime.now(), 'created', row['pathnameext'],))
+                config['vacuum'] = True
         rows = tx.query("SELECT COUNT(*) FROM files WHERE SUBSTR(pathnameext, 0, ?)!=?",
             [len(config['watch_path']) + 2, config['watch_path'] + '/'])
-        delete = [row[0] for row in rows]
+        #delete = [row[0] for row in rows]
         if (rows[0][0]!=0):
             print '{0} > deleting in db not in fs because of watch dir change({1})'.format(format_time(), rows[0][0])
-        rows = tx.query("DELETE FROM files WHERE SUBSTR(pathnameext, 0, ?)!=?",
-            [len(config['watch_path']) + 2, config['watch_path'] + '/'])
+            rows = tx.query("DELETE FROM files WHERE SUBSTR(pathnameext, 0, ?)!=?",
+                [len(config['watch_path']) + 2, config['watch_path'] + '/'])
+            config['vacuum'] = True
+        if (config['vacuum']):
+            tx.query("VACUUM");
 
     return
 
