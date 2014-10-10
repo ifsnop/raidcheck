@@ -36,11 +36,11 @@ config = { 'db_file' : None,
     'watch_path' : './',
     'self': None,
     'database': None,
-    'vacuum': False
+    'vacuum': False,
+    'queue' : Queue(),
+    'salir' : False,
+    'ready' : False
 }
-
-q = Queue()
-salir = [False]
 
 class Transaction(object):
     """A context manager for safe, concurrent access to the database.
@@ -312,7 +312,7 @@ class EventHandler(pyinotify.ProcessEvent):
         #print '{0} o file ({1}) size ({2}) with action ({3})'.format(
         #        format_time(), f['nameext'], format_size(f['size']), f['event'])
 
-        q.put(f)
+        config['queue'].put(f)
         return True
 
 def get_file_stat(file):
@@ -334,7 +334,6 @@ def get_file_stat(file):
         #else:
         #    f = None
             #print "some file/dir was deleted, so no stat possible"
-
     return f
 
 def format_time():
@@ -385,18 +384,19 @@ def sha1_file(filename):
     return None
 
 class BGWorkerQueuer(threading.Thread):
-    def __init__(self, queue, salir, database):
+    def __init__(self, config):
         threading.Thread.__init__(self)
-        self.queue = queue
-        self.salir = salir
-        self.database = database
+        self.config = config
         print '{0} > bgworkerQueuer spawned'.format(format_time())
 
     def run(self):
-        while not self.salir[0]:
+        #while not self.config['ready']:
+        #    time.sleep(1)
+        #print '{0} > bgworkerQueuer ready'.format(format_time())
+        while not self.config['salir']:
             #print '{0} > tic'.format(format_time())
-            while not self.queue.empty():
-                item = self.queue.get()
+            while not self.config['queue'].empty():
+                item = self.config['queue'].get()
                 self.update_database(item)
             time.sleep(1)
         print '{0} > bgworkerQueuer ended'.format(format_time())
@@ -422,7 +422,7 @@ class BGWorkerQueuer(threading.Thread):
         #print '{0} i2 file ({1}) size ({2}) with action ({3})'.format(
         #    format_time(), f['nameext'], format_size(f['size']), f['event'])
 
-        with self.database.transaction() as tx:
+        with self.config['database'].transaction() as tx:
 
             if f['event'] == 'IN_CLOSE_WRITE':
                 rows = tx.query("SELECT pathnameext FROM files WHERE pathnameext=?", (f['pathnameext'],))
@@ -462,32 +462,17 @@ class BGWorkerQueuer(threading.Thread):
                     print '{0} > renaming({1}=>{2})'.format(format_time(), row['pathnameext'], newname)
                     tx.query("UPDATE files SET ts_update=?, pathnameext=? WHERE pathnameext=?",
                         (datetime.datetime.now(), newname, row['pathnameext'],))
-
-#                    print "{0} > adding({1})".format(format_time(), pathnameext)
-#                    tx.query("INSERT INTO files (pathnameext, size, hash, atime, mtime, ctime, ts_create, ts_update, status) VALUES (?,?,?,?,?,?,?,?,?)",
-#                        (pathnameext, f['size'], None, f['atime'], f['mtime'], f['ctime'],
-#                        datetime.datetime.now(), datetime.datetime.now(), 'created',))
-#                elif rows[0]['size'] != f['size'] or rows[0]['mtime'] != f['mtime'] or rows[0]['ctime'] != f['ctime']:
-#                    print "{0} > updating({1})".format(format_time(), pathnameext)
-
-
-
-
-
-
-            #elif file['event'] == 'IN_CREATE':
-            #    print "new directory, nothing to do..."
+        return
 
 class BGWorkerHasher(threading.Thread):
 
-    def __init__(self, salir, database):
+    def __init__(self, config):
         threading.Thread.__init__(self)
-        self.salir = salir
-        self.database = database
+        self.config = config
         print '{0} > bgworkerHasher spawned'.format(format_time())
 
     def run(self):
-        while not self.salir[0]:
+        while not self.config['salir']:
             pathnameext = self.get_file();
             if pathnameext is not None:
                 #print '{0} > found hash candidate({1})'.format(format_time(), repr(pathnameext))
@@ -501,27 +486,21 @@ class BGWorkerHasher(threading.Thread):
         return True
 
     def get_file(self):
-        with self.database.transaction() as tx:
+        with self.config['database'].transaction() as tx:
             rows = tx.query('''SELECT pathnameext, size, hash, ts_create, ts_update, status
                 FROM files WHERE status=? ORDER BY RANDOM() LIMIT 1''', ['created'])
             if rows:
                 #print '{0} > found hashing candidate ({1})'.format(format_time(), row['pathnameext'])
                 pathnameext = rows[0]['pathnameext']
                 #pathnameext = pathnameext.encode('UTF-8')
-                #print pathnameext
             else:
                 #print '{0} > database already processed'.format(format_time())
                 pathnameext = None
 
-            #conn.commit()
-            #conn.close()
-            return pathnameext
+        return pathnameext
 
     def store_hash(self, pathnameext, hash):
-        #conn = sqlite3.connect(config['db_file'], detect_types=sqlite3.PARSE_DECLTYPES)
-        #conn.row_factory = sqlite3.Row
-        #c = conn.cursor()
-        with self.database.transaction() as tx:
+        with self.config['database'].transaction() as tx:
 
             rows = tx.query('''SELECT pathnameext, size, hash, ts_create, ts_update, status
                 FROM files WHERE pathnameext=? AND status=? LIMIT 1''', [pathnameext, 'created'])
@@ -533,29 +512,26 @@ class BGWorkerHasher(threading.Thread):
                 [hash, 'hashed', pathnameext, 'created'])
                 print '{0} > stored file({1}) with hash({2})'.format(format_time(), pathnameext, hash)
 
-        #conn.commit()
-        #conn.close()
         return
 
 class BGWorkerStatus(threading.Thread):
 
-    def __init__(self, salir, database):
+    def __init__(self, config):
         threading.Thread.__init__(self)
-        self.salir = salir
-        self.database = database
+        self.config = config
         self.created = -1
         self.hashed = -1
         print '{0} > bgworkerStatus spawned'.format(format_time())
 
     def run(self):
-        while not self.salir[0]:
-            with self.database.transaction() as tx:
+        while not self.config['salir']:
+            with self.config['database'].transaction() as tx:
                 rowsc = tx.query("SELECT COUNT(*) as count, SUM(size) as size FROM files WHERE status=?", ('created',))
                 rowsh = tx.query("SELECT COUNT(*) as count, SUM(size) as size FROM files WHERE status=?", ('hashed',))
                 created = rowsc[0]['count'] #[row[0] for row in rows1]
                 hashed = rowsh[0]['count'] #[row[0] for row in rows2]
                 if hashed != self.hashed or created != self.created:
-                    print "{0} > {1} created using {2}/{3} hashed using {4}".format(
+                    print "{0} > {1} files created using {2}/{3} files hashed using {4}".format(
                         format_time(), created, format_size(rowsc[0]['size']),
                         hashed, format_size(rowsh[0]['size']))
                     self.hashed = hashed
@@ -600,7 +576,6 @@ def stage2():
 
 def stage3():
     print '{0} > update phase 3 (check for files in db not in fs)'.format(format_time())
-
     #uwatch_path = unicode(config['watch_path'], sys.getfilesystemencoding())
     #watch_path = config['watch_path']
     #"renamed dir, update inside files dir(" + usrc + ') upathnameext(' + upathnameext + ') row(' + row['pathnameext'] + ') len(usrc)=' + str(len(usrc)) + '\n'
@@ -680,21 +655,6 @@ def main(argv):
     config['database'] = Database(config['db_file'])
     transaction = Transaction(config['database'])
 
-    stage1()
-    stage2()
-    stage3()
-
-    #sys.exit()
-
-    thread_BGWorkerQueuer = BGWorkerQueuer(q, salir, config['database'])
-    thread_BGWorkerQueuer.start()
-
-    thread_BGWorkerHasher = BGWorkerHasher(salir, config['database'])
-    thread_BGWorkerHasher.start()
-
-    thread_BGWorkerStatus = BGWorkerStatus(salir, config['database'])
-    thread_BGWorkerStatus.start()
-
     wm = pyinotify.WatchManager()
     notifier = pyinotify.Notifier(wm, EventHandler(), timeout=10*1000)
     mask = pyinotify.IN_CLOSE_WRITE | pyinotify.IN_MOVED_TO | pyinotify.IN_MOVED_FROM |\
@@ -707,8 +667,20 @@ def main(argv):
         auto_add=config['recursive'])
     #on_loop_func = functools.partial(on_loop, counter=Counter())
 
-    #salir[0] = False
-    #thread_BGWorker.join()
+    stage1()
+    stage2()
+    stage3()
+
+    config['ready'] = True
+    #sys.exit()
+
+    thread_BGWorkerQueuer = BGWorkerQueuer(config)
+    thread_BGWorkerQueuer.start()
+    thread_BGWorkerHasher = BGWorkerHasher(config)
+    thread_BGWorkerHasher.start()
+    thread_BGWorkerStatus = BGWorkerStatus(config)
+    thread_BGWorkerStatus.start()
+
 
     try:
         while True:
@@ -726,15 +698,18 @@ def main(argv):
     except pyinotify.NotifierError, err:
         print >> sys.stderr, err
     except KeyboardInterrupt:
-        salir[0] = True
-        notifier.stop()
-        sys.exit(0)
+        print '{0} > waiting for all threads to end'.format(format_time())
+        config['salir'] = True
+        #notifier.stop()
+        #sys.exit(0)
 
     notifier.stop()
+
+    thread_BGWorkerQueuer.join()
+    thread_BGWorkerHasher.join()
+    thread_BGWorkerStatus.join()
+
     return
-
-
-
 
 if __name__ == "__main__":
     main(sys.argv)
