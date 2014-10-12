@@ -445,8 +445,10 @@ class BGWorkerQueuer(threading.Thread):
                 if rows:
                     print '{0} > renaming({1}=>{2})'.format(format_time(), f['src'], f['pathnameext'])
                     tx.query("DELETE FROM files WHERE pathnameext=?", (f['pathnameext'],))
+                    # renames in samba usually change twice the ctime field, so lets get the more recent update
+                    g = get_file_stat(f['pathnameext'])
                     tx.query("UPDATE files SET atime=?, mtime=?, ctime=?, ts_update=?, pathnameext=? WHERE pathnameext=?",
-                        (f['atime'], f['mtime'], f['ctime'], datetime.datetime.now(), f['pathnameext'], f['src'],))
+                        (g['atime'], g['mtime'], g['ctime'], datetime.datetime.now(), f['pathnameext'], f['src'],))
                 else:
                     print '{0} > adding({1})'.format(format_time(), f['pathnameext'])
                     tx.query("INSERT INTO files (pathnameext, size, hash, atime, mtime, ctime, ts_create, ts_update, status) VALUES (?,?,?,?,?,?,?,?,?)",
@@ -482,6 +484,7 @@ class BGWorkerHasher(threading.Thread):
                 self.store_hash(pathnameext, hash)
             else:
                 time.sleep(1)
+
         print '{0} > bgworkerHasher ended'.format(format_time())
         return True
 
@@ -490,28 +493,72 @@ class BGWorkerHasher(threading.Thread):
             rows = tx.query('''SELECT pathnameext, size, hash, ts_create, ts_update, status
                 FROM files WHERE status=? ORDER BY RANDOM() LIMIT 1''', ['created'])
             if rows:
-                #print '{0} > found hashing candidate ({1})'.format(format_time(), row['pathnameext'])
+                #print '{0} > found hashing candidate ({1})'.format(format_time(), rows[0]['pathnameext'])
                 pathnameext = rows[0]['pathnameext']
                 #pathnameext = pathnameext.encode('UTF-8')
             else:
                 #print '{0} > database already processed'.format(format_time())
                 pathnameext = None
-
         return pathnameext
 
     def store_hash(self, pathnameext, hash):
         with self.config['database'].transaction() as tx:
-
             rows = tx.query('''SELECT pathnameext, size, hash, ts_create, ts_update, status
                 FROM files WHERE pathnameext=? AND status=? LIMIT 1''', [pathnameext, 'created'])
             #row = c.fetchone()
             if not rows:
                 print '{0} > file({1}) is no longer available in database'.format(format_time(), pathnameext)
             else:
-                tx.query('''UPDATE files SET hash=?, status=? WHERE pathnameext=? AND status=?''',
-                [hash, 'hashed', pathnameext, 'created'])
+                tx.query('''UPDATE files SET hash=?, status=?, ts_update=? WHERE pathnameext=? AND status=?''',
+                [hash, 'hashed', datetime.datetime.now(), pathnameext, 'created'])
                 print '{0} > stored file({1}) with hash({2})'.format(format_time(), pathnameext, hash)
+        return
 
+class BGWorkerVerifier(threading.Thread):
+
+    def __init__(self, config):
+        threading.Thread.__init__(self)
+        self.config = config
+        print '{0} > bgworkerVerifier spawned'.format(format_time())
+
+    def run(self):
+        while not self.config['salir']:
+            while not self.config['salir'] and self.config['ready']:
+                pathnameext = self.get_file();
+                if pathnameext is not None:
+                    hash = sha1_file(pathnameext)
+                    self.verify_hash(pathnameext, hash)
+                    time.sleep(60)
+                time.sleep(1)
+
+        print '{0} > bgworkerVerifier ended'.format(format_time())
+        return True
+
+    def get_file(self):
+        with self.config['database'].transaction() as tx:
+            rows = tx.query('''SELECT pathnameext, size, hash, ts_create, ts_update, status
+                FROM files WHERE status=? ORDER BY verified, ts_update LIMIT 1''', ['hashed'])
+            if rows:
+                pathnameext = rows[0]['pathnameext']
+                #print '{0} > found verifying candidate ({1})'.format(format_time(), pathnameext)
+            else:
+                pathnameext = None
+        return pathnameext
+
+    def verify_hash(self, pathnameext, hash):
+        with self.config['database'].transaction() as tx:
+            rows = tx.query('''SELECT pathnameext, size, hash, ts_create, ts_update, status
+                FROM files WHERE pathnameext=? AND status=? LIMIT 1''', [pathnameext, 'hashed'])
+            if not rows:
+                print '{0} > file({1}) is no longer available in database'.format(format_time(), pathnameext)
+            else:
+                if rows[0]['hash'] == hash:
+                    tx.query('''UPDATE files SET verified=verified+1,ts_update=? WHERE pathnameext=? AND status=?''',
+                    [datetime.datetime.now(), pathnameext, 'hashed'])
+                    print '{0} > verified file({1}) with hash({2})'.format(format_time(), pathnameext, hash)
+                else:
+                    print '{0} > not verified file({1}) with dbhash({2}) hash({3})'.format(
+                        format_time(), pathnameext, rows[0]['hash'], hash)
         return
 
 class BGWorkerStatus(threading.Thread):
@@ -536,6 +583,10 @@ class BGWorkerStatus(threading.Thread):
                         hashed, format_size(rowsh[0]['size']))
                     self.hashed = hashed
                     self.created = created
+            if (self.created == 0):
+                self.config['ready'] = True
+            else:
+                self.config['ready'] = False
             time.sleep(10)
         print "{0} > bgworkerStatus ended".format(format_time())
         return True
@@ -571,7 +622,6 @@ def stage2():
                     print "{0} > updating({1})".format(format_time(), pathnameext)
                     tx.query("UPDATE files SET size=?, hash=?, atime=?, mtime=?, ctime=?, verified=?, ts_update=?, status=? WHERE pathnameext=?",
                         (f['size'], None, f['atime'], f['mtime'], f['ctime'], 0, datetime.datetime.now(), 'created', pathnameext,))
-
     return True
 
 def stage3():
@@ -671,7 +721,6 @@ def main(argv):
     stage2()
     stage3()
 
-    config['ready'] = True
     #sys.exit()
 
     thread_BGWorkerQueuer = BGWorkerQueuer(config)
@@ -680,7 +729,8 @@ def main(argv):
     thread_BGWorkerHasher.start()
     thread_BGWorkerStatus = BGWorkerStatus(config)
     thread_BGWorkerStatus.start()
-
+    thread_BGWorkerVerifier = BGWorkerVerifier(config)
+    thread_BGWorkerVerifier.start()
 
     try:
         while True:
