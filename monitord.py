@@ -536,8 +536,9 @@ class BGWorkerVerifier(threading.Thread):
 
     def get_file(self):
         with self.config['database'].transaction() as tx:
-            rows = tx.query('''SELECT pathnameext, size, hash, ts_create, ts_update, status
-                FROM files WHERE status=? ORDER BY verified, ts_update LIMIT 1''', ['hashed'])
+            rows = tx.query("SELECT pathnameext FROM files WHERE status=? GROUP BY pathnameext HAVING verified<=MIN(verified) ORDER BY RANDOM() LIMIT 1",
+                ['hashed']);
+                #"SELECT pathnameext, size, hash, ts_create, ts_update, status FROM files WHERE status=? ORDER BY verified, ts_update LIMIT 1", ['hashed'])
             if rows:
                 pathnameext = rows[0]['pathnameext']
                 #print '{0} > found verifying candidate ({1})'.format(format_time(), pathnameext)
@@ -568,6 +569,7 @@ class BGWorkerStatus(threading.Thread):
         self.config = config
         self.created = -1
         self.hashed = -1
+        self.verified = -1
         print '{0} > bgworkerStatus spawned'.format(format_time())
 
     def run(self):
@@ -575,14 +577,21 @@ class BGWorkerStatus(threading.Thread):
             with self.config['database'].transaction() as tx:
                 rowsc = tx.query("SELECT COUNT(*) as count, SUM(size) as size FROM files WHERE status=?", ('created',))
                 rowsh = tx.query("SELECT COUNT(*) as count, SUM(size) as size FROM files WHERE status=?", ('hashed',))
+                rowsv = tx.query("SELECT COUNT(*) as count FROM files WHERE status=? AND verified=(SELECT MIN(verified) FROM files)",
+                    ('hashed',))
                 created = rowsc[0]['count'] #[row[0] for row in rows1]
                 hashed = rowsh[0]['count'] #[row[0] for row in rows2]
-                if hashed != self.hashed or created != self.created:
-                    print "{0} > {1} files created using {2}/{3} files hashed using {4}".format(
-                        format_time(), created, format_size(rowsc[0]['size']),
-                        hashed, format_size(rowsh[0]['size']))
+                verified = rowsv[0]['count']
+                if hashed != self.hashed or created != self.created or verified != self.verified:
+                    print "{0} > {1} files created using {2}".format(
+                        format_time(), created, format_size(rowsc[0]['size']))
+                    print "{0} > {1} files hashed using {2}".format(
+                        format_time(), hashed, format_size(rowsc[0]['size']))
+                    print "{0} > {1}/{2} files pending verification until next round".format(
+                        format_time(),  verified, hashed)
                     self.hashed = hashed
                     self.created = created
+                    self.verified = verified
             if (self.created == 0):
                 self.config['ready'] = True
             else:
