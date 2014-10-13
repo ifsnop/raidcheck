@@ -528,7 +528,8 @@ class BGWorkerVerifier(threading.Thread):
                 if pathnameext is not None:
                     hash = sha1_file(pathnameext)
                     self.verify_hash(pathnameext, hash)
-                    time.sleep(60)
+                    for i in range(60):
+                        time.sleep(1)
                 time.sleep(1)
 
         print '{0} > bgworkerVerifier ended'.format(format_time())
@@ -596,7 +597,8 @@ class BGWorkerStatus(threading.Thread):
                 self.config['ready'] = True
             else:
                 self.config['ready'] = False
-            time.sleep(10)
+            for i in range(3660):
+                time.sleep(1)
         print "{0} > bgworkerStatus ended".format(format_time())
         return True
 
