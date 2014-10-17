@@ -537,9 +537,10 @@ class BGWorkerVerifier(threading.Thread):
 
     def get_file(self):
         with self.config['database'].transaction() as tx:
-            rows = tx.query("SELECT pathnameext FROM files WHERE status=? GROUP BY pathnameext HAVING verified<=MIN(verified) ORDER BY RANDOM() LIMIT 1",
+            rows = tx.query("SELECT pathnameext FROM files WHERE status=? AND verified<=(SELECT MIN(verified) FROM files) ORDER BY RANDOM() LIMIT 1",
                 ['hashed']);
                 #"SELECT pathnameext, size, hash, ts_create, ts_update, status FROM files WHERE status=? ORDER BY verified, ts_update LIMIT 1", ['hashed'])
+                #"SELECT pathnameext FROM files WHERE status=? GROUP BY pathnameext HAVING verified<=MIN(verified) ORDER BY RANDOM() LIMIT 1",
             if rows:
                 pathnameext = rows[0]['pathnameext']
                 #print '{0} > found verifying candidate ({1})'.format(format_time(), pathnameext)
@@ -597,7 +598,7 @@ class BGWorkerStatus(threading.Thread):
                 self.config['ready'] = True
             else:
                 self.config['ready'] = False
-            for i in range(3660):
+            for i in range(600):
                 time.sleep(1)
         print "{0} > bgworkerStatus ended".format(format_time())
         return True
