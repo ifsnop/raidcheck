@@ -424,12 +424,18 @@ class BGWorkerQueuer(threading.Thread):
 
         with self.config['database'].transaction() as tx:
 
+            rows = tx.query("SELECT MIN(verified) AS min FROM files");
+            if not rows:
+                minverified = 0
+            else:
+                minverified = rows[0]['min'];
+
             if f['event'] == 'IN_CLOSE_WRITE':
                 rows = tx.query("SELECT pathnameext FROM files WHERE pathnameext=?", (f['pathnameext'],))
                 if not rows:
                     print '{0} > adding({1})'.format(format_time(), f['pathnameext'])
-                    tx.query("INSERT INTO files (pathnameext, size, hash, atime, mtime, ctime, ts_create, ts_update, status) VALUES (?,?,?,?,?,?,?,?,?)",
-                        (f['pathnameext'], f['size'], None, f['atime'], f['mtime'], f['ctime'], datetime.datetime.now(), datetime.datetime.now(), 'created',))
+                    tx.query("INSERT INTO files (pathnameext, size, hash, atime, mtime, ctime, verified, ts_create, ts_update, status) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                        (f['pathnameext'], f['size'], None, f['atime'], f['mtime'], f['ctime'], minverified, datetime.datetime.now(), datetime.datetime.now(), 'created',))
                 else:
                     print '{0} > updating({1})'.format(format_time(), f['pathnameext'])
                     tx.query("UPDATE files SET size=?, hash=?, atime=?, mtime=?, ctime=?, ts_update=?, status=? WHERE pathnameext=?",
@@ -451,8 +457,8 @@ class BGWorkerQueuer(threading.Thread):
                         (g['atime'], g['mtime'], g['ctime'], datetime.datetime.now(), f['pathnameext'], f['src'],))
                 else:
                     print '{0} > adding({1})'.format(format_time(), f['pathnameext'])
-                    tx.query("INSERT INTO files (pathnameext, size, hash, atime, mtime, ctime, ts_create, ts_update, status) VALUES (?,?,?,?,?,?,?,?,?)",
-                        (f['pathnameext'], f['size'], None, f['atime'], f['mtime'], f['ctime'], datetime.datetime.now(), datetime.datetime.now(), 'created',))
+                    tx.query("INSERT INTO files (pathnameext, size, hash, atime, mtime, ctime, verified, ts_create, ts_update, status) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                        (f['pathnameext'], f['size'], None, f['atime'], f['mtime'], f['ctime'], minverified, datetime.datetime.now(), datetime.datetime.now(), 'created',))
 
             elif f['event'] == 'IN_MOVED_TO|IN_ISDIR':
                 rows = tx.query("SELECT pathnameext, size, hash, ts_create, ts_update, status FROM files WHERE SUBSTR(pathnameext, 0, ?)=?",
@@ -529,7 +535,10 @@ class BGWorkerVerifier(threading.Thread):
                     hash = sha1_file(pathnameext)
                     self.verify_hash(pathnameext, hash)
                     for i in range(60):
-                        time.sleep(1)
+                        if self.config['salir']:
+                            break
+                        else:
+                            time.sleep(1)
                 time.sleep(1)
 
         print '{0} > bgworkerVerifier ended'.format(format_time())
@@ -599,7 +608,10 @@ class BGWorkerStatus(threading.Thread):
             else:
                 self.config['ready'] = False
             for i in range(600):
-                time.sleep(1)
+                if self.config['salir']:
+                    break
+                else:
+                    time.sleep(1)
         print "{0} > bgworkerStatus ended".format(format_time())
         return True
 
