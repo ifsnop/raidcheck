@@ -307,18 +307,17 @@ class EventHandler(pyinotify.ProcessEvent):
             f['src'] = event.src_pathname
 
         g = get_file_stat(f['pathnameext'])
-        f = dict(f.items() + g.items())
 
+        f = dict(f.items() + g.items())
         #print '{0} o file ({1}) size ({2}) with action ({3})'.format(
         #        format_time(), f['nameext'], format_size(f['size']), f['event'])
-
         config['queue'].put(f)
+
         return True
 
 def get_file_stat(file):
 
     f = dict()
-    f['size'] = -1
 
     try:
         s = os.stat(file)
@@ -332,7 +331,7 @@ def get_file_stat(file):
             print "!!!!!!!!!!!!!!!!!!!!!!!!raised error!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
             raise
         #else:
-        #    f = None
+            #f = None
             #print "some file/dir was deleted, so no stat possible"
     return f
 
@@ -397,7 +396,9 @@ class BGWorkerQueuer(threading.Thread):
             #print '{0} > tic'.format(format_time())
             while not self.config['queue'].empty():
                 item = self.config['queue'].get()
-                self.update_database(item)
+                # only insert in database if file/dir was stated successfully
+                if 'size' in item:
+                    self.update_database(item)
             time.sleep(1)
         print '{0} > bgworkerQueuer ended'.format(format_time())
         return True
@@ -409,6 +410,7 @@ class BGWorkerQueuer(threading.Thread):
         if f['event'][:9] == 'IN_CREATE': return True
         if f['event'][:9] == 'IN_DELETE' and f['dir']: return True
         if f['event'] == 'IN_MOVED_FROM': return True
+        #if f['event'] == 'IN_MOVED_TO|IN_ISDIR' and 'src' not in f: return True
 
         #print '{0} i1 file ({1}) size ({2}) with action ({3})'.format(
         #    format_time(), f['nameext'], format_size(f['size']), f['event'])
@@ -418,9 +420,8 @@ class BGWorkerQueuer(threading.Thread):
 
         if f['event'] == 'IN_MOVED_TO' and 'src' not in f:
             f['event'] = 'IN_CLOSE_WRITE'
-
-        #print '{0} i2 file ({1}) size ({2}) with action ({3})'.format(
-        #    format_time(), f['nameext'], format_size(f['size']), f['event'])
+        #if f['event'] == 'IN_MOVED_TO|IN_ISDIR' and 'src' not in f:
+        #    f['event'] = 'IN_CLOSE_WRITE'
 
         with self.config['database'].transaction() as tx:
 
@@ -445,6 +446,15 @@ class BGWorkerQueuer(threading.Thread):
                 print '{0} > deleting({1})'.format(format_time(), f['pathnameext'])
                 tx.query("DELETE FROM files WHERE pathnameext=?", (f['pathnameext'],))
 
+            elif f['event'] == 'IN_MOVED_FROM|IN_ISDIR': # directory was moved away from watched dir, delete all files inside directory from database
+                dir_path = f['pathnameext'] + '/'
+                print '{0} > deleting({1})'.format(format_time(), dir_path)
+                rows = tx.query("SELECT COUNT(*) AS count FROM files WHERE SUBSTR(pathnameext, 0, ?)=?",
+                    (len(dir_path)+1, dir_path,))
+                print '{0} > deleting ({1}) files from ({2})'.format(format_time(), rows[0]['count'], dir_path)
+                tx.query("DELETE FROM files WHERE SUBSTR(pathnameext, 0, ?)=?",
+                    (len(dir_path)+1, dir_path,))
+
             elif f['event'] == 'IN_MOVED_TO':
                 rows = tx.query("SELECT pathnameext, size, hash, ts_create, ts_update, status FROM files WHERE pathnameext=?",
                     (f['src'],))
@@ -461,15 +471,36 @@ class BGWorkerQueuer(threading.Thread):
                         (f['pathnameext'], f['size'], None, f['atime'], f['mtime'], f['ctime'], minverified, datetime.datetime.now(), datetime.datetime.now(), 'created',))
 
             elif f['event'] == 'IN_MOVED_TO|IN_ISDIR':
-                rows = tx.query("SELECT pathnameext, size, hash, ts_create, ts_update, status FROM files WHERE SUBSTR(pathnameext, 0, ?)=?",
-                    (len(src)+2, src + '/',))
-                for row in rows:
-                    #print "renamed dir, update inside files dir(" + usrc + ') upathnameext(' + upathnameext + ') row(' + row['pathnameext'] + ') len(usrc)=' + str(len(usrc)) + '\n'
-                    newname =  f['pathnameext'] +  '/' + row['pathnameext'][len(src)+1:]
-                    #print ">" + newname + '<\n'
-                    print '{0} > renaming({1}=>{2})'.format(format_time(), row['pathnameext'], newname)
-                    tx.query("UPDATE files SET ts_update=?, pathnameext=? WHERE pathnameext=?",
-                        (datetime.datetime.now(), newname, row['pathnameext'],))
+                if src is not None:
+                    rows = tx.query("SELECT pathnameext, size, hash, ts_create, ts_update, status FROM files WHERE SUBSTR(pathnameext, 0, ?)=?",
+                        (len(src)+2, src + '/',))
+                    for row in rows:
+                        #print "renamed dir, update inside files dir(" + usrc + ') upathnameext(' + upathnameext + ') row(' + row['pathnameext'] + ') len(usrc)=' + str(len(usrc)) + '\n'
+                        newname =  f['pathnameext'] +  '/' + row['pathnameext'][len(src)+1:]
+                        #print ">" + newname + '<\n'
+                        print '{0} > renaming({1}=>{2})'.format(format_time(), row['pathnameext'], newname)
+                        tx.query("UPDATE files SET ts_update=?, pathnameext=? WHERE pathnameext=?",
+                            (datetime.datetime.now(), newname, row['pathnameext'],))
+                else:
+                    print '{0} > moved new dir({1}) inside watched tree'.format(format_time(), f['pathnameext'])
+                    # update all files inside new dir!
+                    for root, dirs, files in os.walk(f['pathnameext'], topdown=True):
+                        for name in files:
+                            pathnameext = os.path.join(root, name)
+                            f = get_file_stat(pathnameext)
+                            rows = tx.query("SELECT pathnameext, size, atime, mtime, ctime, verified, ts_create, ts_update FROM files WHERE pathnameext=?",
+                                (pathnameext,))
+                            if not rows:
+                                print "{0} > adding({1})".format(format_time(), pathnameext)
+                                tx.query("INSERT INTO files (pathnameext, size, hash, atime, mtime, ctime, verified, ts_create, ts_update, status) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                                    (pathnameext, f['size'], None, f['atime'], f['mtime'], f['ctime'], 0,
+                                    datetime.datetime.now(), datetime.datetime.now(), 'created',))
+                            elif rows[0]['size'] != f['size'] or rows[0]['mtime'] != f['mtime'] or rows[0]['ctime'] != f['ctime']:
+                                # when moving a directory from outside watched tree, if dest dir exists, then an event
+                                # of move is raised for each file, not for the dir. we could never arrive here.
+                                print "{0} > updating({1}) [should never happen!]".format(format_time(), pathnameext)
+                                tx.query("UPDATE files SET size=?, hash=?, atime=?, mtime=?, ctime=?, verified=?, ts_update=?, status=? WHERE pathnameext=?",
+                                    (f['size'], None, f['atime'], f['mtime'], f['ctime'], 0, datetime.datetime.now(), 'created', pathnameext,))
         return
 
 class BGWorkerHasher(threading.Thread):
@@ -533,7 +564,12 @@ class BGWorkerVerifier(threading.Thread):
                 pathnameext = self.get_file();
                 if pathnameext is not None:
                     hash = sha1_file(pathnameext)
-                    self.verify_hash(pathnameext, hash)
+                    if hash is None:
+                        print '{0} > couldn\'t calculate hash for file({1}), file no longer available'.format(format_time(), pathnameext)
+                        # remove file from database, because can't be accessed
+                        self.remove_from_db(pathnameext)
+                    else:
+                        self.verify_hash(pathnameext, hash)
                     for i in range(60):
                         if self.config['salir']:
                             break
@@ -573,6 +609,18 @@ class BGWorkerVerifier(threading.Thread):
                         format_time(), pathnameext, rows[0]['hash'], hash)
         return
 
+    def remove_from_db(self, pathnameext):
+
+        with config['database'].transaction() as tx:
+            #print '{0} > searching for deletion ({1})'.format(format_time(), pathnameext)
+            rows = tx.query("SELECT pathnameext FROM files WHERE pathnameext=?",
+                (pathnameext,))
+            if rows:
+                print '{0} > deleting({1}) from database'.format(format_time(), pathnameext)
+                tx.query("DELETE FROM files WHERE pathnameext=?",
+                    (pathnameext,))
+        return
+
 class BGWorkerStatus(threading.Thread):
 
     def __init__(self, config):
@@ -597,7 +645,7 @@ class BGWorkerStatus(threading.Thread):
                     print "{0} > {1} files created using {2}".format(
                         format_time(), created, format_size(rowsc[0]['size']))
                     print "{0} > {1} files hashed using {2}".format(
-                        format_time(), hashed, format_size(rowsc[0]['size']))
+                        format_time(), hashed, format_size(rowsh[0]['size']))
                     print "{0} > {1}/{2} files pending verification until next round".format(
                         format_time(),  verified, hashed)
                     self.hashed = hashed
@@ -659,7 +707,7 @@ def stage3():
             [len(config['watch_path']) + 2, config['watch_path'] + '/'])
         for row in rows:
             f = get_file_stat(row['pathnameext'])
-            if f['size'] == -1:
+            if not 'size' in f:
                 print '{0} > deleting({1})'.format(format_time(), row['pathnameext'])
                 tx.query("DELETE FROM files WHERE pathnameext=?",
                     (row['pathnameext'],))
@@ -729,18 +777,19 @@ def main(argv):
     config['database'] = Database(config['db_file'])
     transaction = Transaction(config['database'])
 
+    pyinotify.log.setLevel(50)
     wm = pyinotify.WatchManager()
     notifier = pyinotify.Notifier(wm, EventHandler(), timeout=10*1000)
     mask = pyinotify.IN_CLOSE_WRITE | pyinotify.IN_MOVED_TO | pyinotify.IN_MOVED_FROM |\
         pyinotify.IN_DELETE | pyinotify.IN_DELETE_SELF | pyinotify.IN_CREATE | pyinotify.IN_Q_OVERFLOW |\
         pyinotify.IN_MOVE_SELF
-        #pyinotify.ALL_EVENTS
+    # |\
+    #mask = pyinotify.ALL_EVENTS
     wm.add_watch(config['watch_path'],
         mask,
         rec=config['recursive'],
         auto_add=config['recursive'])
     #on_loop_func = functools.partial(on_loop, counter=Counter())
-
     stage1()
     stage2()
     stage3()
