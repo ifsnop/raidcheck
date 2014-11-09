@@ -607,6 +607,7 @@ class BGWorkerVerifier(threading.Thread):
                 else:
                     print '{0} > not verified file({1}) with dbhash({2}) hash({3})'.format(
                         format_time(), pathnameext, rows[0]['hash'], hash)
+                    self.config['salir'] = False
         return
 
     def remove_from_db(self, pathnameext):
@@ -806,7 +807,7 @@ def main(argv):
     thread_BGWorkerVerifier.start()
 
     try:
-        while True:
+        while not config['salir']:
             notifier.process_events()
             while notifier.check_events():  #loop in case more events appear while we are processing
                 notifier.read_events()
