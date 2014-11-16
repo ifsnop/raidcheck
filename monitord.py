@@ -40,7 +40,8 @@ config = { 'db_file' : None,
     'queue' : Queue(),
     'salir' : False,
     'ready' : False,
-    'timeout_status' : 6
+    'timeout_status' : 6,
+    'consistent_start' : None
 }
 
 class Transaction(object):
@@ -719,10 +720,12 @@ def stage2():
                     tx.query("INSERT INTO files (pathnameext, size, hash, atime, mtime, ctime, verified, ts_create, ts_update, status) VALUES (?,?,?,?,?,?,?,?,?,?)",
                         (pathnameext, f['size'], None, f['atime'], f['mtime'], f['ctime'], 0,
                         datetime.datetime.now(), datetime.datetime.now(), 'created',))
+                    config['consistent_start'] = False
                 elif rows[0]['size'] != f['size'] or rows[0]['mtime'] != f['mtime'] or rows[0]['ctime'] != f['ctime']:
                     print "{0} > updating({1})".format(format_time(), pathnameext)
                     tx.query("UPDATE files SET size=?, hash=?, atime=?, mtime=?, ctime=?, verified=?, ts_update=?, status=? WHERE pathnameext=?",
                         (f['size'], None, f['atime'], f['mtime'], f['ctime'], 0, datetime.datetime.now(), 'created', pathnameext,))
+                    config['consistent_start'] = False
     return True
 
 def stage3():
@@ -748,12 +751,13 @@ def stage3():
             [len(config['watch_path']) + 2, config['watch_path'] + '/'])
         #delete = [row[0] for row in rows]
         if (rows[0][0]!=0):
-            print '{0} > deleting in db not in fs because of watch dir change({1})'.format(format_time(), rows[0][0])
+            print '{0} > deleting from db not in fs because of watch dir change({1})'.format(format_time(), rows[0][0])
             rows = tx.query("DELETE FROM files WHERE SUBSTR(pathnameext, 0, ?)!=?",
                 [len(config['watch_path']) + 2, config['watch_path'] + '/'])
             config['vacuum'] = True
         if (config['vacuum']):
             tx.query("VACUUM");
+            config['consistent_start'] = False
 
     return
 
@@ -823,6 +827,9 @@ def main(argv):
     stage1()
     stage2()
     stage3()
+    if config['consistent_start']:
+        print '{0} > database was not in a consistent state, fixed'.format(format_time())
+
 
     #sys.exit()
 
