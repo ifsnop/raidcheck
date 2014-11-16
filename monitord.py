@@ -669,6 +669,11 @@ class BGWorkerStatus(threading.Thread):
                 created = rowsc[0]['count'] #[row[0] for row in rows1]
                 hashed = rowsh[0]['count'] #[row[0] for row in rows2]
                 verified = rowsv[0]['count']
+                rows = tx.query("SELECT MIN(verified) AS min FROM files");
+                minverified = rows[0]['min'];
+                rows = tx.query("SELECT MAX(verified) AS max FROM files");
+                maxverified = rows[0]['max'];
+
                 if hashed != self.hashed or created != self.created or verified != self.verified or deleted != self.deleted:
                     print "{0} > {1} files deleted using {2} have been purged".format(
                         format_time(), deleted, format_size(rowsd[0]['size']))
@@ -676,8 +681,8 @@ class BGWorkerStatus(threading.Thread):
                         format_time(), created, format_size(rowsc[0]['size']))
                     print "{0} > {1} files hashed using {2}".format(
                         format_time(), hashed, format_size(rowsh[0]['size']))
-                    print "{0} > {1}/{2} files pending verification until next round".format(
-                        format_time(),  verified, hashed)
+                    print "{0} > {1}/{2} files pending verification until next round min/max ratio ({3}/{4})".format(
+                        format_time(),  verified, hashed, minverified, maxverified)
                     self.hashed = hashed
                     self.created = created
                     self.verified = verified
