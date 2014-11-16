@@ -314,9 +314,9 @@ class EventHandler(pyinotify.ProcessEvent):
         g = get_file_stat(f['pathnameext'])
         f = dict(f.items() + g.items())
 
-        print '{0} > EP0 > file({1}) size({2}) with action({3}) src({4}) cookie({5})'.format(
-                format_time(), f['pathnameext'], format_size(f['size']),
-                f['event'], f['src'], f['cookie'])
+        #print '{0} > EP0 > file({1}) size({2}) with action({3}) src({4}) cookie({5})'.format(
+        #        format_time(), f['pathnameext'], format_size(f['size']),
+        #        f['event'], f['src'], f['cookie'])
 
         config['queue'].put(f)
         return True
@@ -412,9 +412,9 @@ class BGWorkerQueuer(threading.Thread):
         return True
 
     def update_database(self, f):
-        print '{0} > EP1 > file({1}) size({2}) with action({3}) src({4}) cookie({5})'.format(
-            format_time(), f['pathnameext'], format_size(f['size']),
-            f['event'], f['src'], f['cookie'])
+        #print '{0} > EP1 > file({1}) size({2}) with action({3}) src({4}) cookie({5})'.format(
+        #    format_time(), f['pathnameext'], format_size(f['size']),
+        #    f['event'], f['src'], f['cookie'])
 
         if f['event'] == 'IN_MOVE_SELF': return True
         if f['event'] == 'IN_DELETE_SELF': return True
@@ -424,9 +424,9 @@ class BGWorkerQueuer(threading.Thread):
         #if f['event'] == 'IN_MOVED_FROM|IN_ISDIR' and f['cookie'] is not None: return True # necesario para rename dir, pero no funciona para mover fuera
         if f['event'] == 'IN_MOVED_TO' and f['src'] is None: f['event'] = 'IN_CLOSE_WRITE'
 
-        print '{0} > EP2 > file({1}) size({2}) with action({3}) src({4}) cookie({5})'.format(
-            format_time(), f['pathnameext'], format_size(f['size']),
-            f['event'], f['src'], f['cookie'])
+        #print '{0} > EP2 > file({1}) size({2}) with action({3}) src({4}) cookie({5})'.format(
+        #    format_time(), f['pathnameext'], format_size(f['size']),
+        #    f['event'], f['src'], f['cookie'])
 
         with self.config['database'].transaction() as tx:
             rows = tx.query("SELECT MIN(verified) AS min FROM files");
