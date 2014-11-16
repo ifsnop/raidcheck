@@ -40,7 +40,7 @@ config = { 'db_file' : None,
     'queue' : Queue(),
     'salir' : False,
     'ready' : False,
-    'timeout_status' : 6,
+    'timeout_status' : 600,
     'consistent_start' : None
 }
 
