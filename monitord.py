@@ -534,8 +534,11 @@ class BGWorkerHasher(threading.Thread):
                 #print '{0} > found hash candidate({1})'.format(format_time(), repr(pathnameext))
                 #print '{0} > found hash candidate({1})'.format(format_time(), pathnameext)
                 hash = sha1_file(pathnameext)
-                #print '{0} > ({1}) => hash({2})'.format(format_time(), pathnameext, hash)
-                self.store_hash(pathnameext, hash)
+                if hash is None:
+                    print '{0} > couldn\'t calculate hash for file({1}), file no longer available'.format(format_time(), pathnameext)
+                else:
+                    #print '{0} > ({1}) => hash({2})'.format(format_time(), pathnameext, hash)
+                    self.store_hash(pathnameext, hash)
             else:
                 time.sleep(1)
 
@@ -599,7 +602,7 @@ class BGWorkerVerifier(threading.Thread):
 
     def get_file(self):
         with self.config['database'].transaction() as tx:
-            rows = tx.query("SELECT pathnameext FROM files WHERE status=? AND verified<=(SELECT MIN(verified) FROM files) ORDER BY RANDOM() LIMIT 1",
+            rows = tx.query("SELECT pathnameext FROM files WHERE status=? AND verified<=(SELECT MIN(verified) FROM files) AND hash IS NOT NULL ORDER BY RANDOM() LIMIT 1",
                 ['hashed']);
                 #"SELECT pathnameext, size, hash, ts_create, ts_update, status FROM files WHERE status=? ORDER BY verified, ts_update LIMIT 1", ['hashed'])
                 #"SELECT pathnameext FROM files WHERE status=? GROUP BY pathnameext HAVING verified<=MIN(verified) ORDER BY RANDOM() LIMIT 1",
@@ -661,6 +664,13 @@ class BGWorkerStatus(threading.Thread):
                 if deleted>0:
                     tx.query("DELETE FROM files WHERE status LIKE ? AND ts_update < ?",
                         ['deleted_%', datetime.datetime.now() - datetime.timedelta(minutes=1)])
+
+                """ fix hashed files without hash, should never happen """
+                rows = tx.query("SELECT COUNT(*) as count FROM files WHERE hash IS NULL AND status=?", ['hashed'])
+                if rows[0]['count'] > 0:
+                    print "{0} > fixing {1} file(s) hashed without hash".format(format_time(), rows[0]['count'])
+                    tx.query("UPDATE files SET hash = NULL, status=?, ts_update=? WHERE hash IS NULL AND status=?",
+                        ['created', datetime.datetime.now(), 'hashed'])
 
                 rowsc = tx.query("SELECT COUNT(*) as count, SUM(size) as size FROM files WHERE status=?", ('created',))
                 rowsh = tx.query("SELECT COUNT(*) as count, SUM(size) as size FROM files WHERE status=?", ('hashed',))
