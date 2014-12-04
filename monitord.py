@@ -429,22 +429,25 @@ class BGWorkerQueuer(threading.Thread):
         #    f['event'], f['src'], f['cookie'])
 
         with self.config['database'].transaction() as tx:
-            rows = tx.query("SELECT MIN(verified) AS min FROM files");
-            if not rows:
-                minverified = 0
-            else:
-                minverified = rows[0]['min'];
+            minverified = get_min_verified()
+            #rows = tx.query("SELECT MIN(verified) AS min FROM files WHERE status=?",['hashed']);
+            #if not rows:
+            #    minverified = 0
+            #else:
+            #    minverified = rows[0]['min'];
 
             if f['event'] == 'IN_CLOSE_WRITE':
                 rows = tx.query("SELECT pathnameext FROM files WHERE pathnameext=?", (f['pathnameext'],))
                 if not rows:
                     print '{0} > event(A) adding({1})'.format(format_time(), f['pathnameext'])
                     tx.query("INSERT INTO files (pathnameext, size, hash, atime, mtime, ctime, verified, ts_create, ts_update, status) VALUES (?,?,?,?,?,?,?,?,?,?)",
-                        (f['pathnameext'], f['size'], None, f['atime'], f['mtime'], f['ctime'], minverified, datetime.datetime.now(), datetime.datetime.now(), 'created',))
+                        [f['pathnameext'], f['size'], None, f['atime'], f['mtime'], f['ctime'], minverified,
+                        datetime.datetime.now(), datetime.datetime.now(), 'created'])
                 else:
                     print '{0} > event(B) updating({1})'.format(format_time(), f['pathnameext'])
-                    tx.query("UPDATE files SET size=?, hash=?, atime=?, mtime=?, ctime=?, ts_update=?, status=? WHERE pathnameext=?",
-                    (f['size'], None, f['atime'], f['mtime'], f['ctime'], datetime.datetime.now(), 'created', f['pathnameext'],))
+                    tx.query("UPDATE files SET size=?, hash=?, atime=?, mtime=?, ctime=?, verified=?, ts_update=?, status=? WHERE pathnameext=?",
+                        [f['size'], None, f['atime'], f['mtime'], f['ctime'], minverified,
+                        datetime.datetime.now(), 'created', f['pathnameext']])
 
             elif f['event'][:9] == 'IN_DELETE':
                 print '{0} > event(C) deleting({1})'.format(format_time(), f['pathnameext'])
@@ -665,24 +668,30 @@ class BGWorkerStatus(threading.Thread):
                     tx.query("DELETE FROM files WHERE status LIKE ? AND ts_update < ?",
                         ['deleted_%', datetime.datetime.now() - datetime.timedelta(minutes=1)])
 
+                minverified = get_min_verified()
+                #rows = tx.query("SELECT MIN(verified) AS min FROM files WHERE status=?",['hashed']);
+                #minverified = rows[0]['min'];
+
                 """ fix hashed files without hash, should never happen """
                 rows = tx.query("SELECT COUNT(*) as count FROM files WHERE hash IS NULL AND status=?", ['hashed'])
                 if rows[0]['count'] > 0:
                     print "{0} > fixing {1} file(s) hashed without hash".format(format_time(), rows[0]['count'])
-                    tx.query("UPDATE files SET hash = NULL, status=?, ts_update=? WHERE hash IS NULL AND status=?",
-                        ['created', datetime.datetime.now(), 'hashed'])
+                    tx.query("UPDATE files SET hash = NULL, status=?, verified=?, ts_update=? WHERE hash IS NULL AND status=?",
+                        ['created', minverified, datetime.datetime.now(), 'hashed'])
 
                 rowsc = tx.query("SELECT COUNT(*) as count, SUM(size) as size FROM files WHERE status=?", ('created',))
                 rowsh = tx.query("SELECT COUNT(*) as count, SUM(size) as size FROM files WHERE status=?", ('hashed',))
-                rowsv = tx.query("SELECT COUNT(*) as count FROM files WHERE status=? AND verified=(SELECT MIN(verified) FROM files)",
-                    ('hashed',))
+                rowsv = tx.query("SELECT COUNT(*) as count FROM files WHERE status=? AND verified=(SELECT MIN(verified) FROM files WHERE status=?)",
+                    ['hashed','hashed'])
                 created = rowsc[0]['count'] #[row[0] for row in rows1]
                 hashed = rowsh[0]['count'] #[row[0] for row in rows2]
                 verified = rowsv[0]['count']
-                rows = tx.query("SELECT MIN(verified) AS min FROM files");
-                minverified = rows[0]['min'];
-                rows = tx.query("SELECT MAX(verified) AS max FROM files");
-                maxverified = rows[0]['max'];
+                minverified = get_min_verified()
+                maxverified = get_max_verified()
+                #rows = tx.query("SELECT MIN(verified) AS min FROM files WHERE status=?",['hashed']);
+                #minverified = rows[0]['min']
+                #rows = tx.query("SELECT MAX(verified) AS max FROM files WHERE status=?",['hashed']);
+                #maxverified = rows[0]['max']
 
                 if hashed != self.hashed or created != self.created or verified != self.verified or deleted != self.deleted:
                     print "{0} > {1} files deleted using {2} have been purged".format(
@@ -721,9 +730,28 @@ def stage1():
         tx.query("DELETE FROM files WHERE status LIKE ?", ['deleted%'])
     return True
 
+def get_min_verified():
+    with config['database'].transaction() as tx:
+        rows = tx.query("SELECT MIN(verified) AS min FROM files WHERE status=?",['hashed']);
+        if not rows or rows[0]['min'] is None:
+            verified = 0
+        else:
+            verified = rows[0]['min']
+    return verified
+
+def get_max_verified():
+    with config['database'].transaction() as tx:
+        rows = tx.query("SELECT MAX(verified) AS max FROM files WHERE status=?",['hashed']);
+        if not rows or rows[0]['max'] is None:
+            verified = 0
+        else:
+            verified = rows[0]['max']
+    return verified
+
 def stage2():
     print "{0} > update phase 2 (check for files in fs not in db)".format(format_time())
     with config['database'].transaction() as tx:
+        minverified = get_min_verified()
         for root, dirs, files in os.walk(config['watch_path'], topdown=True):
             for name in files:
                 pathnameext = os.path.join(root, name)
@@ -733,20 +761,37 @@ def stage2():
                 if not rows:
                     print "{0} > adding({1})".format(format_time(), pathnameext)
                     tx.query("INSERT INTO files (pathnameext, size, hash, atime, mtime, ctime, verified, ts_create, ts_update, status) VALUES (?,?,?,?,?,?,?,?,?,?)",
-                        (pathnameext, f['size'], None, f['atime'], f['mtime'], f['ctime'], 0,
+                        (pathnameext, f['size'], None, f['atime'], f['mtime'], f['ctime'], minverified,
                         datetime.datetime.now(), datetime.datetime.now(), 'created',))
                     config['consistent_start'] = False
-                elif rows[0]['size'] != f['size'] or rows[0]['mtime'] != f['mtime'] or rows[0]['ctime'] != f['ctime']:
-                    print "{0} > updating({1})".format(format_time(), pathnameext)
-                    tx.query("UPDATE files SET size=?, hash=?, atime=?, mtime=?, ctime=?, verified=?, ts_update=?, status=? WHERE pathnameext=?",
-                        (f['size'], None, f['atime'], f['mtime'], f['ctime'], 0, datetime.datetime.now(), 'created', pathnameext,))
-                    config['consistent_start'] = False
+                    config['vacuum'] = True
+                else:
+                    row = rows[0]
+                    if f['size'] != row['size']:
+                        print '{0} > updating with modified file({1})'.format(format_time(), pathnameext)
+                        tx.query("UPDATE files SET size=?, hash=?, atime=?, mtime=?, ctime=?, verified=?, ts_update=?, status=? WHERE pathnameext=?",
+                            (f['size'], None, f['atime'], f['mtime'], f['ctime'], minverified,
+                            datetime.datetime.now(), 'created', row['pathnameext'],))
+                    elif f['mtime'] != row['mtime'] or f['ctime'] != row['ctime']:
+                        if f['mtime'] != row['mtime'] and f['ctime'] != row['ctime']:
+                            print '{0} > updating with modified file({1})'.format(format_time(), pathnameext)
+                            tx.query("UPDATE files SET size=?, hash=?, atime=?, mtime=?, ctime=?, verified=?, ts_update=?, status=? WHERE pathnameext=?",
+                                (f['size'], None, f['atime'], f['mtime'], f['ctime'], minverified,
+                                datetime.datetime.now(), 'created', row['pathnameext'],))
+                            config['consistent_start'] = False
+                        elif f['mtime'] != row['mtime']:
+                            print '{0} > (can\'t happen, ctime should me modified also) updating with modified file({1})'.format(format_time(), pathnameext)
+                        elif f['ctime'] != row['ctime']:
+                            print '{0} > updating inode information from file({1})'.format(format_time(), pathnameext)
+                            tx.query("UPDATE files SET ctime=?, ts_update=? WHERE pathnameext=?",
+                                [f['ctime'], datetime.datetime.now(), row['pathnameext']])
     return True
 
 def stage3():
     print '{0} > update phase 3 (check for files in db not in fs)'.format(format_time())
     #uwatch_path = unicode(config['watch_path'], sys.getfilesystemencoding())
     with config['database'].transaction() as tx:
+        minverified = get_min_verified()
         rows = tx.query("SELECT pathnameext, size, hash, atime, mtime, ctime, verified, ts_create, ts_update, status FROM files WHERE SUBSTR(pathnameext, 0, ?)=?",
             [len(config['watch_path']) + 2, config['watch_path'] + '/'])
         for row in rows:
@@ -756,12 +801,27 @@ def stage3():
                 tx.query("DELETE FROM files WHERE pathnameext=?",
                     (row['pathnameext'],))
                 config['vacuum'] = True
-            elif f['size'] != row['size'] or f['mtime'] != row['mtime'] or f['ctime'] != row['ctime']:
-                print '{0} > updating({1})'.format(format_time(), pathnameext)
+                config['consistent_start'] = False
+            elif f['size'] != row['size']:
+                print '{0} > updating with modified file({1})'.format(format_time(), pathnameext)
                 tx.query("UPDATE files SET size=?, hash=?, atime=?, mtime=?, ctime=?, verified=?, ts_update=?, status=? WHERE pathnameext=?",
-                    (f['size'], None, f['atime'], f['mtime'], f['ctime'], 0,
+                    (f['size'], None, f['atime'], f['mtime'], f['ctime'], minverified,
                     datetime.datetime.now(), 'created', row['pathnameext'],))
-                config['vacuum'] = True
+                config['consistent_start'] = False
+            elif f['mtime'] != row['mtime'] or f['ctime'] != row['ctime']:
+                if f['mtime'] != row['mtime'] and f['ctime'] != row['ctime']:
+                    print '{0} > updating with modified file({1})'.format(format_time(), row['pathnameext'])
+                    tx.query("UPDATE files SET size=?, hash=?, atime=?, mtime=?, ctime=?, verified=?, ts_update=?, status=? WHERE pathnameext=?",
+                        (f['size'], None, f['atime'], f['mtime'], f['ctime'], minverified,
+                        datetime.datetime.now(), 'created', row['pathnameext'],))
+                    config['consistent_start'] = False
+                elif f['mtime'] != row['mtime']:
+                    print '{0} > (can\'t happen, ctime should me modified also) updating with modified file({1})'.format(format_time(), row['pathnameext'])
+                elif f['ctime'] != row['ctime']:
+                    print '{0} > updating inode information from file({1})'.format(format_time(), row['pathnameext'])
+                    tx.query("UPDATE files SET ctime=?, ts_update=? WHERE pathnameext=?",
+                        [f['ctime'], datetime.datetime.now(), row['pathnameext']])
+
         rows = tx.query("SELECT COUNT(*) FROM files WHERE SUBSTR(pathnameext, 0, ?)!=?",
             [len(config['watch_path']) + 2, config['watch_path'] + '/'])
         #delete = [row[0] for row in rows]
@@ -770,6 +830,7 @@ def stage3():
             rows = tx.query("DELETE FROM files WHERE SUBSTR(pathnameext, 0, ?)!=?",
                 [len(config['watch_path']) + 2, config['watch_path'] + '/'])
             config['vacuum'] = True
+
         if (config['vacuum']):
             tx.query("VACUUM");
             config['consistent_start'] = False
@@ -842,7 +903,7 @@ def main(argv):
     stage1()
     stage2()
     stage3()
-    if config['consistent_start']:
+    if not config['consistent_start']:
         print '{0} > database was not in a consistent state, fixed'.format(format_time())
 
 
