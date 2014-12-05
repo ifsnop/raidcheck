@@ -41,7 +41,7 @@ config = { 'db_file' : None,
     'salir' : False,
     'ready' : False,
     'timeout_status' : 600,
-    'consistent_start' : None
+    'consistent_start' : True
 }
 
 class Transaction(object):
@@ -764,7 +764,6 @@ def stage2():
                         (pathnameext, f['size'], None, f['atime'], f['mtime'], f['ctime'], minverified,
                         datetime.datetime.now(), datetime.datetime.now(), 'created',))
                     config['consistent_start'] = False
-                    config['vacuum'] = True
                 else:
                     row = rows[0]
                     if f['size'] != row['size']:
@@ -772,6 +771,7 @@ def stage2():
                         tx.query("UPDATE files SET size=?, hash=?, atime=?, mtime=?, ctime=?, verified=?, ts_update=?, status=? WHERE pathnameext=?",
                             (f['size'], None, f['atime'], f['mtime'], f['ctime'], minverified,
                             datetime.datetime.now(), 'created', row['pathnameext'],))
+                        config['consistent_start'] = False
                     elif f['mtime'] != row['mtime'] or f['ctime'] != row['ctime']:
                         if f['mtime'] != row['mtime'] and f['ctime'] != row['ctime']:
                             print '{0} > updating with modified file({1})'.format(format_time(), pathnameext)
@@ -798,8 +798,7 @@ def stage3():
             f = get_file_stat(row['pathnameext'])
             if not 'size' in f:
                 print '{0} > deleting({1})'.format(format_time(), row['pathnameext'])
-                tx.query("DELETE FROM files WHERE pathnameext=?",
-                    (row['pathnameext'],))
+                tx.query("DELETE FROM files WHERE pathnameext=?", (row['pathnameext'],))
                 config['vacuum'] = True
                 config['consistent_start'] = False
             elif f['size'] != row['size']:
