@@ -41,7 +41,8 @@ config = { 'db_file' : None,
     'salir' : False,
     'ready' : False,
     'timeout_status' : 600,
-    'consistent_start' : True
+    'consistent_start' : True,
+    'nice'  : True
 }
 
 class Transaction(object):
@@ -328,9 +329,26 @@ def get_file_stat(file):
     try:
         s = os.stat(file)
         f['size'] = s.st_size
-        f['atime'] = str(datetime.datetime.fromtimestamp(s.st_atime))
-        f['mtime'] = str(datetime.datetime.fromtimestamp(s.st_mtime))
-        f['ctime'] = str(datetime.datetime.fromtimestamp(s.st_ctime))
+        try:
+            f['atime'] = str(datetime.datetime.fromtimestamp(s.st_atime))
+        except ValueError as e:
+            print '{0} error formating time of file({1}) atime({2:.3f})'.format(
+                format_time(), file, s.st_atime)
+            f['atime'] = 0
+            #sys.exit(2)
+        try:
+            f['mtime'] = str(datetime.datetime.fromtimestamp(s.st_mtime))
+        except ValueError as e:
+            print '{0} error formating time of file({1}) mtime({2:.3f})'.format(
+                format_time(), file, s.st_mtime)
+            f['mtime'] = 0
+        try:
+            f['ctime'] = str(datetime.datetime.fromtimestamp(s.st_ctime))
+        except ValueError as e:
+            print '{0} error formating time of file({1}) ctime({2:.3f})'.format(
+                format_time(), file, s.st_ctime)
+            f['ctime'] = 0
+
     except OSError as e:
         if e.errno != errno.ENOENT: # if error different from not found
             print '{0} unexpected error({1}) when stat\'ing file({2})'.format(
@@ -542,6 +560,8 @@ class BGWorkerHasher(threading.Thread):
                 else:
                     #print '{0} > ({1}) => hash({2})'.format(format_time(), pathnameext, hash)
                     self.store_hash(pathnameext, hash)
+                    if self.config['nice']:
+                        time.sleep(1)
             else:
                 time.sleep(1)
 
@@ -749,7 +769,20 @@ def get_max_verified():
     return verified
 
 def stage2():
-    print "{0} > update phase 2 (check for files in fs not in db)".format(format_time())
+    print "{0} > update phase 2 (correct db from watch dir change)".format(format_time())
+    with config['database'].transaction() as tx:
+        rows = tx.query("SELECT COUNT(*) FROM files WHERE SUBSTR(pathnameext, 0, ?)!=?",
+            [len(config['watch_path']) + 2, config['watch_path'] + '/'])
+        #delete = [row[0] for row in rows]
+        if (rows[0][0]!=0):
+            print '{0} > deleting from db not in fs because of watch dir change({1})'.format(format_time(), rows[0][0])
+            rows = tx.query("DELETE FROM files WHERE SUBSTR(pathnameext, 0, ?)!=?",
+                [len(config['watch_path']) + 2, config['watch_path'] + '/'])
+            config['vacuum'] = True
+
+
+def stage3():
+    print "{0} > update phase 3 (check for files in fs not in db)".format(format_time())
     with config['database'].transaction() as tx:
         minverified = get_min_verified()
         for root, dirs, files in os.walk(config['watch_path'], topdown=True):
@@ -787,8 +820,8 @@ def stage2():
                                 [f['ctime'], datetime.datetime.now(), row['pathnameext']])
     return True
 
-def stage3():
-    print '{0} > update phase 3 (check for files in db not in fs)'.format(format_time())
+def stage4():
+    print '{0} > update phase 4 (check for files in db not in fs)'.format(format_time())
     #uwatch_path = unicode(config['watch_path'], sys.getfilesystemencoding())
     with config['database'].transaction() as tx:
         minverified = get_min_verified()
@@ -821,14 +854,14 @@ def stage3():
                     tx.query("UPDATE files SET ctime=?, ts_update=? WHERE pathnameext=?",
                         [f['ctime'], datetime.datetime.now(), row['pathnameext']])
 
-        rows = tx.query("SELECT COUNT(*) FROM files WHERE SUBSTR(pathnameext, 0, ?)!=?",
-            [len(config['watch_path']) + 2, config['watch_path'] + '/'])
-        #delete = [row[0] for row in rows]
-        if (rows[0][0]!=0):
-            print '{0} > deleting from db not in fs because of watch dir change({1})'.format(format_time(), rows[0][0])
-            rows = tx.query("DELETE FROM files WHERE SUBSTR(pathnameext, 0, ?)!=?",
-                [len(config['watch_path']) + 2, config['watch_path'] + '/'])
-            config['vacuum'] = True
+        #rows = tx.query("SELECT COUNT(*) FROM files WHERE SUBSTR(pathnameext, 0, ?)!=?",
+        #    [len(config['watch_path']) + 2, config['watch_path'] + '/'])
+        ##delete = [row[0] for row in rows]
+        #if (rows[0][0]!=0):
+        #    print '{0} > deleting from db not in fs because of watch dir change({1})'.format(format_time(), rows[0][0])
+        #    rows = tx.query("DELETE FROM files WHERE SUBSTR(pathnameext, 0, ?)!=?",
+        #        [len(config['watch_path']) + 2, config['watch_path'] + '/'])
+        #    config['vacuum'] = True
 
         if (config['vacuum']):
             tx.query("VACUUM");
@@ -902,6 +935,7 @@ def main(argv):
     stage1()
     stage2()
     stage3()
+    stage4()
     if not config['consistent_start']:
         print '{0} > database was not in a consistent state, fixed'.format(format_time())
 
