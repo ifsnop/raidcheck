@@ -557,6 +557,8 @@ class BGWorkerHasher(threading.Thread):
                 hash = sha1_file(pathnameext)
                 if hash is None:
                     print '{0} > couldn\'t calculate hash for file({1}), file no longer available'.format(format_time(), pathnameext)
+                    remove_from_db(pathnameext)
+                    #tx.query("DELETE FROM files WHERE pathnameext=?", [pathnameext])
                 else:
                     #print '{0} > ({1}) => hash({2})'.format(format_time(), pathnameext, hash)
                     self.store_hash(pathnameext, hash)
@@ -610,7 +612,7 @@ class BGWorkerVerifier(threading.Thread):
                     if hash is None:
                         print '{0} > couldn\'t calculate hash for file({1}), file no longer available'.format(format_time(), pathnameext)
                         # remove file from database, because can't be accessed
-                        self.remove_from_db(pathnameext)
+                        remove_from_db(pathnameext)
                     else:
                         self.verify_hash(pathnameext, hash)
                     for i in range(60):
@@ -652,7 +654,7 @@ class BGWorkerVerifier(threading.Thread):
                         format_time(), pathnameext, rows[0]['hash'], hash)
                     self.config['salir'] = True
         return
-
+"""
     def remove_from_db(self, pathnameext):
 
         with config['database'].transaction() as tx:
@@ -664,7 +666,7 @@ class BGWorkerVerifier(threading.Thread):
                 tx.query("DELETE FROM files WHERE pathnameext=?",
                     (pathnameext,))
         return
-
+"""
 class BGWorkerStatus(threading.Thread):
 
     def __init__(self, config):
@@ -830,8 +832,9 @@ def stage4():
         for row in rows:
             f = get_file_stat(row['pathnameext'])
             if not 'size' in f:
-                print '{0} > deleting({1})'.format(format_time(), row['pathnameext'])
-                tx.query("DELETE FROM files WHERE pathnameext=?", (row['pathnameext'],))
+                #print '{0} > deleting({1})'.format(format_time(), row['pathnameext'])
+                remove_from_db(row['pathnameext'])
+                #tx.query("DELETE FROM files WHERE pathnameext=?", (row['pathnameext'],))
                 config['vacuum'] = True
                 config['consistent_start'] = False
             elif f['size'] != row['size']:
@@ -867,6 +870,16 @@ def stage4():
             tx.query("VACUUM");
             config['consistent_start'] = False
 
+    return
+
+def remove_from_db(pathnameext):
+
+    with config['database'].transaction() as tx:
+        print '{0} > searching for deletion ({1})'.format(format_time(), pathnameext)
+        rows = tx.query("SELECT pathnameext FROM files WHERE pathnameext=?", [pathnameext])
+        if rows:
+            print '{0} > deleting({1}) from database'.format(format_time(), pathnameext)
+            tx.query("DELETE FROM files WHERE pathnameext=?", [pathnameext])
     return
 
 def main(argv):
