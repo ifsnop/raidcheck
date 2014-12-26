@@ -313,6 +313,12 @@ class EventHandler(pyinotify.ProcessEvent):
             f['cookie'] = event.cookie
 
         g = get_file_stat(f['pathnameext'])
+        # even if g is None, event should be generated to detect file renaming
+
+        # don't uncomment
+        #if not g:
+        #    return True
+
         f = dict(f.items() + g.items())
 
         #print '{0} > EP0 > file({1}) size({2}) with action({3}) src({4}) cookie({5})'.format(
@@ -496,15 +502,28 @@ class BGWorkerQueuer(threading.Thread):
                     [f['src'], 'deleted%;' + str(f['cookie'])])
                 if rows:
                     print '{0} > event(E) renaming({1}=>{2})'.format(format_time(), f['src'], f['pathnameext'])
-                    # delete destinationrom database, maybe we are overwriting
+                    # delete destination from database, maybe we are overwriting
                     tx.query("DELETE FROM files WHERE pathnameext=?", (f['pathnameext'],))
                     # renames in samba usually change twice the ctime field, so lets get the more recent update
                     g = get_file_stat(f['pathnameext'])
-                    newstatus = rows[0]['status'].split("_")[1].split(";")[0]
-                    tx.query("UPDATE files SET atime=?, mtime=?, ctime=?, ts_update=?, pathnameext=?, status=? WHERE pathnameext=?",
-                        (g['atime'], g['mtime'], g['ctime'], datetime.datetime.now(), f['pathnameext'], newstatus, f['src'],))
+                    if g:
+                        newstatus = rows[0]['status'].split("_")[1].split(";")[0]
+                        tx.query("UPDATE files SET atime=?, mtime=?, ctime=?, ts_update=?, pathnameext=?, status=? WHERE pathnameext=?",
+                            (g['atime'], g['mtime'], g['ctime'], datetime.datetime.now(), f['pathnameext'], newstatus, f['src'],))
+                    else:
+                        print '{0} > event(E1) failed while renaming, file({1}) doesn\'t exist, ignoring'.format(format_time(), f['pathnameext'])
+                        # write code to handle this failure, deleting f['src'] from db because there was no destination in rename
+
                 else:
+                    # moved and not in database, but check before
                     print '{0} > event(F) adding({1})'.format(format_time(), f['pathnameext'])
+                    rows = tx.query("SELECT pathnameext, status FROM files WHERE pathnameext=?", [f['pathnameext']])
+                    if rows:
+                        #for row in rows:
+                        #    print row['pathnameext'], row['status'], '\n'
+                        #    #pprint.pprint(row)
+                        tx.query("DELETE FROM files WHERE pathnameext=?", [f['pathnameext']])
+
                     tx.query("INSERT INTO files (pathnameext, size, hash, atime, mtime, ctime, verified, ts_create, ts_update, status) VALUES (?,?,?,?,?,?,?,?,?,?)",
                         (f['pathnameext'], f['size'], None, f['atime'], f['mtime'], f['ctime'], minverified, datetime.datetime.now(), datetime.datetime.now(), 'created',))
 
@@ -526,19 +545,23 @@ class BGWorkerQueuer(threading.Thread):
                         for name in files:
                             pathnameext = os.path.join(root, name)
                             f = get_file_stat(pathnameext)
-                            rows = tx.query("SELECT pathnameext, size, atime, mtime, ctime, verified, ts_create, ts_update FROM files WHERE pathnameext=?",
-                                (pathnameext,))
-                            if not rows:
-                                print "{0} > event(H1) adding({1})".format(format_time(), pathnameext)
-                                tx.query("INSERT INTO files (pathnameext, size, hash, atime, mtime, ctime, verified, ts_create, ts_update, status) VALUES (?,?,?,?,?,?,?,?,?,?)",
-                                    (pathnameext, f['size'], None, f['atime'], f['mtime'], f['ctime'], minverified,
-                                    datetime.datetime.now(), datetime.datetime.now(), 'created',))
-                            elif rows[0]['size'] != f['size'] or rows[0]['mtime'] != f['mtime'] or rows[0]['ctime'] != f['ctime']:
-                                # when moving a directory from outside watched tree, if dest dir exists, then an event
-                                # of move is raised for each file, not for the dir. we could never arrive here.
-                                print "{0} > event(H2) updating({1}) [should never happen!]".format(format_time(), pathnameext)
-                                tx.query("UPDATE files SET size=?, hash=?, atime=?, mtime=?, ctime=?, verified=?, ts_update=?, status=? WHERE pathnameext=?",
-                                    (f['size'], None, f['atime'], f['mtime'], f['ctime'], minverified, datetime.datetime.now(), 'created', pathnameext,))
+                            if f:
+                                rows = tx.query("SELECT pathnameext, size, atime, mtime, ctime, verified, ts_create, ts_update FROM files WHERE pathnameext=?",
+                                    (pathnameext,))
+                                if not rows:
+                                    print "{0} > event(H1) adding({1})".format(format_time(), pathnameext)
+                                    tx.query("INSERT INTO files (pathnameext, size, hash, atime, mtime, ctime, verified, ts_create, ts_update, status) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                                        (pathnameext, f['size'], None, f['atime'], f['mtime'], f['ctime'], minverified,
+                                        datetime.datetime.now(), datetime.datetime.now(), 'created',))
+                                elif rows[0]['size'] != f['size'] or rows[0]['mtime'] != f['mtime'] or rows[0]['ctime'] != f['ctime']:
+                                    # when moving a directory from outside watched tree, if dest dir exists, then an event
+                                    # of move is raised for each file, not for the dir. we could never arrive here.
+                                    print "{0} > event(H2) updating({1}) [should never happen!]".format(format_time(), pathnameext)
+                                    tx.query("UPDATE files SET size=?, hash=?, atime=?, mtime=?, ctime=?, verified=?, ts_update=?, status=? WHERE pathnameext=?",
+                                        (f['size'], None, f['atime'], f['mtime'], f['ctime'], minverified, datetime.datetime.now(), 'created', pathnameext,))
+                            else:
+                                print "{0} > event(H3) file({1}) doesn\'t exist, ignoring".format(format_time(), pathnameext)
+
         return
 
 class BGWorkerHasher(threading.Thread):
@@ -791,35 +814,38 @@ def stage3():
             for name in files:
                 pathnameext = os.path.join(root, name)
                 f = get_file_stat(pathnameext)
-                rows = tx.query("SELECT pathnameext, size, atime, mtime, ctime, verified, ts_create, ts_update FROM files WHERE pathnameext=?",
-                    (pathnameext,))
-                if not rows:
-                    print "{0} > adding({1})".format(format_time(), pathnameext)
-                    tx.query("INSERT INTO files (pathnameext, size, hash, atime, mtime, ctime, verified, ts_create, ts_update, status) VALUES (?,?,?,?,?,?,?,?,?,?)",
-                        (pathnameext, f['size'], None, f['atime'], f['mtime'], f['ctime'], minverified,
-                        datetime.datetime.now(), datetime.datetime.now(), 'created',))
-                    config['consistent_start'] = False
-                else:
-                    row = rows[0]
-                    if f['size'] != row['size']:
-                        print '{0} > updating with modified file({1})'.format(format_time(), pathnameext)
-                        tx.query("UPDATE files SET size=?, hash=?, atime=?, mtime=?, ctime=?, verified=?, ts_update=?, status=? WHERE pathnameext=?",
-                            (f['size'], None, f['atime'], f['mtime'], f['ctime'], minverified,
-                            datetime.datetime.now(), 'created', row['pathnameext'],))
+                if f:
+                    rows = tx.query("SELECT pathnameext, size, atime, mtime, ctime, verified, ts_create, ts_update FROM files WHERE pathnameext=?",
+                        (pathnameext,))
+                    if not rows:
+                        print "{0} > adding({1})".format(format_time(), pathnameext)
+                        tx.query("INSERT INTO files (pathnameext, size, hash, atime, mtime, ctime, verified, ts_create, ts_update, status) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                            (pathnameext, f['size'], None, f['atime'], f['mtime'], f['ctime'], minverified,
+                            datetime.datetime.now(), datetime.datetime.now(), 'created',))
                         config['consistent_start'] = False
-                    elif f['mtime'] != row['mtime'] or f['ctime'] != row['ctime']:
-                        if f['mtime'] != row['mtime'] and f['ctime'] != row['ctime']:
+                    else:
+                        row = rows[0]
+                        if f['size'] != row['size']:
                             print '{0} > updating with modified file({1})'.format(format_time(), pathnameext)
                             tx.query("UPDATE files SET size=?, hash=?, atime=?, mtime=?, ctime=?, verified=?, ts_update=?, status=? WHERE pathnameext=?",
                                 (f['size'], None, f['atime'], f['mtime'], f['ctime'], minverified,
                                 datetime.datetime.now(), 'created', row['pathnameext'],))
                             config['consistent_start'] = False
-                        elif f['mtime'] != row['mtime']:
-                            print '{0} > (can\'t happen, ctime should me modified also) updating with modified file({1})'.format(format_time(), pathnameext)
-                        elif f['ctime'] != row['ctime']:
-                            print '{0} > updating inode information from file({1})'.format(format_time(), pathnameext)
-                            tx.query("UPDATE files SET ctime=?, ts_update=? WHERE pathnameext=?",
-                                [f['ctime'], datetime.datetime.now(), row['pathnameext']])
+                        elif f['mtime'] != row['mtime'] or f['ctime'] != row['ctime']:
+                            if f['mtime'] != row['mtime'] and f['ctime'] != row['ctime']:
+                                print '{0} > updating with modified file({1})'.format(format_time(), pathnameext)
+                                tx.query("UPDATE files SET size=?, hash=?, atime=?, mtime=?, ctime=?, verified=?, ts_update=?, status=? WHERE pathnameext=?",
+                                    (f['size'], None, f['atime'], f['mtime'], f['ctime'], minverified,
+                                    datetime.datetime.now(), 'created', row['pathnameext'],))
+                                config['consistent_start'] = False
+                            elif f['mtime'] != row['mtime']:
+                                print '{0} > (can\'t happen, ctime should me modified also) updating with modified file({1})'.format(format_time(), pathnameext)
+                            elif f['ctime'] != row['ctime']:
+                                print '{0} > updating inode information from file({1})'.format(format_time(), pathnameext)
+                                tx.query("UPDATE files SET ctime=?, ts_update=? WHERE pathnameext=?",
+                                    [f['ctime'], datetime.datetime.now(), row['pathnameext']])
+                else:
+                    print '{0} > file({1}) can\'t be found, ignoring'.format(format_time(), pathnameext)
     return True
 
 def stage4():
@@ -831,7 +857,7 @@ def stage4():
             [len(config['watch_path']) + 2, config['watch_path'] + '/'])
         for row in rows:
             f = get_file_stat(row['pathnameext'])
-            if not 'size' in f:
+            if not 'size' in f: # realmente cont "not f:" también debería funcionar
                 #print '{0} > deleting({1})'.format(format_time(), row['pathnameext'])
                 remove_from_db(row['pathnameext'])
                 #tx.query("DELETE FROM files WHERE pathnameext=?", (row['pathnameext'],))
