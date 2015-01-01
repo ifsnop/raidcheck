@@ -405,10 +405,14 @@ def check_free_space(paths, free_bytes_limit):
     return True
 
 def hash_file(filename):
+    ret = {}
     try:
         import hashlib
         with open(filename, 'rb') as f:
-            return hashlib.sha1(f.read()).hexdigest()
+            time_start = time.time()
+            ret['hash'] = hashlib.sha1(f.read()).hexdigest()
+            ret['time'] = time.time() - time_start
+            return ret
     except (OSError, IOError) as e:
         return None
     return None
@@ -615,8 +619,9 @@ class BGWorkerHasher(threading.Thread):
                 print '{0} > file({1}) is no longer available in database'.format(format_time(), pathnameext)
             else:
                 tx.query('''UPDATE files SET hash=?, status=?, ts_update=? WHERE pathnameext=? AND status=?''',
-                [hash, 'hashed', datetime.datetime.now(), pathnameext, 'created'])
-                print '{0} > stored file({1}) with hash({2})'.format(format_time(), pathnameext, hash)
+                    [hash['hash'], 'hashed', datetime.datetime.now(), pathnameext, 'created'])
+                print '{0} > stored file({1}) with hash({2}) in ({3}) seconds'.format(format_time(),
+                    pathnameext, hash['hash'], hash['time'])
         return
 
 class BGWorkerVerifier(threading.Thread):
@@ -668,13 +673,13 @@ class BGWorkerVerifier(threading.Thread):
             if not rows:
                 print '{0} > file({1}) is no longer available in database'.format(format_time(), pathnameext)
             else:
-                if rows[0]['hash'] == hash:
+                if rows[0]['hash'] == hash['hash']:
                     tx.query('''UPDATE files SET verified=verified+1,ts_update=? WHERE pathnameext=? AND status=?''',
                         [datetime.datetime.now(), pathnameext, 'hashed'])
-                    print '{0} > verified file({1}) with hash({2})'.format(format_time(), pathnameext, hash)
+                    print '{0} > verified file({1}) with hash({2}) in ({3}) seconds'.format(format_time(), pathnameext, hash['hash'], hash['time'])
                 else:
-                    print '{0} > not verified file({1}) with dbhash({2}) hash({3})'.format(
-                        format_time(), pathnameext, rows[0]['hash'], hash)
+                    print '{0} > not verified file({1}) with dbhash({2}) hash({3}) in ({4}) seconds'.format(
+                        format_time(), pathnameext, rows[0]['hash'], hash['hash'], hash['time'])
                     self.config['salir'] = True
         return
 """
