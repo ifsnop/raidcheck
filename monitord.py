@@ -404,7 +404,7 @@ def check_free_space(paths, free_bytes_limit):
             return path
     return True
 
-def sha1_file(filename):
+def hash_file(filename):
     try:
         import hashlib
         with open(filename, 'rb') as f:
@@ -577,7 +577,7 @@ class BGWorkerHasher(threading.Thread):
             if pathnameext is not None:
                 #print '{0} > found hash candidate({1})'.format(format_time(), repr(pathnameext))
                 #print '{0} > found hash candidate({1})'.format(format_time(), pathnameext)
-                hash = sha1_file(pathnameext)
+                hash = hash_file(pathnameext)
                 if hash is None:
                     print '{0} > couldn\'t calculate hash for file({1}), file no longer available'.format(format_time(), pathnameext)
                     remove_from_db(pathnameext)
@@ -631,7 +631,7 @@ class BGWorkerVerifier(threading.Thread):
             while not self.config['salir'] and self.config['ready']:
                 pathnameext = self.get_file();
                 if pathnameext is not None:
-                    hash = sha1_file(pathnameext)
+                    hash = hash_file(pathnameext)
                     if hash is None:
                         print '{0} > couldn\'t calculate hash for file({1}), file no longer available'.format(format_time(), pathnameext)
                         # remove file from database, because can't be accessed
