@@ -924,18 +924,20 @@ def remove_from_db(pathnameext):
 
 def main(argv):
     def usage():
-        print 'usage: ', argv[0], '[-h|--help]'
-        print '                 [-r|--recursive]'
-        print '                 -w|--watch-path <path>'
+        print 'usage: ', argv[0]
+        print '    [-h|--help]'
+        print '    -d|--db-file <file>'
+        print '    [-r|--recursive]'
+        print '    [-w|--watch-path <path>]'
         print
         print 'Starts automatic filesystem monitoring'
         print
-        print ' -d, --db-file            sqlite path to store hash(sha1) signatures'
-        print '                          default to \'' + str(config['db_file']) + '\''
-        print ' -r, --recursive          descent into subdirectories'
-        print '                          defaults to', str(config['recursive'])
-        print ' -w, --watch-path <path>  where to look for new files'
-        print '                          defaults to \'' + config['watch_path'] + '\''
+        print '    -d, --db-file            sqlite path to store hash(sha1) signatures, required'
+        print '                             default to \'' + str(config['db_file']) + '\''
+        print '    -r, --recursive          descent into subdirectories, optional'
+        print '                             defaults to', str(config['recursive'])
+        print '    -w, --watch-path <path>  where to look for new files, optional'
+        print '                             defaults to \'' + config['watch_path'] + '\''
 
     try:
         opts, args = getopt.getopt(argv[1:], 'hd:rw:', ['help',
