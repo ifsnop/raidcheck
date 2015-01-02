@@ -404,6 +404,13 @@ def check_free_space(paths, free_bytes_limit):
             return path
     return True
 
+def calculate_speed(size, time):
+    if time>0:
+        speed = format_size(size/time)
+    else:
+        speed = "NaN"
+    return speed + "/s"
+
 def hash_file(filename):
     ret = {}
     try:
@@ -620,8 +627,8 @@ class BGWorkerHasher(threading.Thread):
             else:
                 tx.query('''UPDATE files SET hash=?, status=?, ts_update=? WHERE pathnameext=? AND status=?''',
                     [hash['hash'], 'hashed', datetime.datetime.now(), pathnameext, 'created'])
-                print '{0} > stored file({1}) with hash({2}) in ({3}) seconds'.format(format_time(),
-                    pathnameext, hash['hash'], hash['time'])
+                print '{0} > stored file({1}) with hash({2}) in ({3})'.format(format_time(),
+                    pathnameext, hash['hash'], calculate_speed(rows[0]['size'], hash['time']))
         return
 
 class BGWorkerVerifier(threading.Thread):
@@ -676,10 +683,12 @@ class BGWorkerVerifier(threading.Thread):
                 if rows[0]['hash'] == hash['hash']:
                     tx.query('''UPDATE files SET verified=verified+1,ts_update=? WHERE pathnameext=? AND status=?''',
                         [datetime.datetime.now(), pathnameext, 'hashed'])
-                    print '{0} > verified file({1}) with hash({2}) in ({3}) seconds'.format(format_time(), pathnameext, hash['hash'], hash['time'])
+                    print '{0} > verified file({1}) with hash({2}) at ({3})'.format(format_time(),
+                        pathnameext, hash['hash'], calculate_speed(rows[0]['size'], hash['time']))
                 else:
-                    print '{0} > not verified file({1}) with dbhash({2}) hash({3}) in ({4}) seconds'.format(
-                        format_time(), pathnameext, rows[0]['hash'], hash['hash'], hash['time'])
+                    print '{0} > not verified file({1}) with dbhash({2}) hash({3}) at ({4})'.format(
+                        format_time(), pathnameext, rows[0]['hash'], hash['hash'],
+                        calculate_speed(rows[0]['size'], hash['time']))
                     self.config['salir'] = True
         return
 """
