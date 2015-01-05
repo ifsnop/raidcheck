@@ -345,7 +345,8 @@ def main(argv):
                 #print crc(pathname)
                 #print crc('/mnt/fotos/Bang Bros Network/Haze Her/BBHHVID1/2011-09-27 - (za9220) - AXX Pledges Get it Up the Ass/za9220_3000.mp4')
                 #sys.exit(2)
-                tx.query("DELETE FROM csvs WHERE csv_name=?", [filename])
+                colname = filename.split("(")[0]
+                tx.query("DELETE FROM csvs WHERE csv_name LIKE ?", [colname + '%'])
                 with open(pathname,'rb') as c: # `with` statement available in 2.5+
                     # csv.DictReader uses first line in file for column headings by default
                     reader = csv.reader(c, delimiter=',') # no header information with delimiter
@@ -360,6 +361,8 @@ def main(argv):
                         print row[2]
                         print row[3]
 
+
+        tx.query("VACUUM")
 
     return True
 
