@@ -354,6 +354,7 @@ def main(argv):
                         for row in reader:
                             to_db = [row[0], row[1], row[2], row[3], filename]
                             tx.query("INSERT INTO csvs (filename, size, crc32, path, csv_name) VALUES (?,?,?,?,?);", to_db)
+                        time.sleep(1)
                     except:
                         print pathname
                         print row[0]
@@ -361,7 +362,7 @@ def main(argv):
                         print row[2]
                         print row[3]
 
-
+        print '{0} > performing db optimization'.format(format_time())
         tx.query("VACUUM")
 
     return True

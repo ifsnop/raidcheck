@@ -656,6 +656,7 @@ class BGWorkerVerifier(threading.Thread):
                         else:
                             time.sleep(1)
                 time.sleep(1)
+            time.sleep(1)
 
         print '{0} > bgworkerVerifier ended'.format(format_time())
         return True
@@ -818,7 +819,7 @@ def stage2():
             rows = tx.query("DELETE FROM files WHERE SUBSTR(pathnameext, 0, ?)!=?",
                 [len(config['watch_path']) + 2, config['watch_path'] + '/'])
             config['vacuum'] = True
-
+    return True
 
 def stage3():
     print "{0} > update phase 3 (check for files in fs not in db)".format(format_time())
