@@ -78,7 +78,7 @@ def crc(fileName):
     prev = 0
     for eachLine in open(fileName,"rb"):
         prev = zlib.crc32(eachLine, prev)
-    return "%X"%(prev & 0xFFFFFFFF)
+    return "%08X"%(prev & 0xFFFFFFFF)
 
 # Python 3.2: hashlib.algorithms_available.add('crc32')
 
@@ -341,7 +341,7 @@ def main(argv):
                 s = os.stat(pathname)
                 size = s.st_size
                 #print pathname,s.st_size
-                rows = tx.query("SELECT filename, crc32, csv_name FROM csvs WHERE size=?", [size])
+                rows = tx.query("SELECT path, filename, crc32, csv_name FROM csvs WHERE size=?", [size])
                 if not rows:
                     #print filename
                     continue
@@ -354,6 +354,12 @@ def main(argv):
                         print '{0} > found file({1}) as file_in_csv({2}) crc32({3}) in csv({4})'.format(
                             format_time(), pathname, row['filename'], crc32, row['csv_name'])
                         print 'IFS {0} {1}'.format(row['csv_name'], pathname)
+                    else:
+                        if size>5000000:
+                            print 'IFQ {0} {1} {2} "{3}{4}" {5}'.format(
+                                row['csv_name'], crc32, size, row['path'], row['filename'],
+                                pathname)
+
 
     return True
 

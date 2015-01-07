@@ -352,9 +352,9 @@ def main(argv):
                     reader = csv.reader(c, delimiter=',') # no header information with delimiter
                     try:
                         for row in reader:
-                            to_db = [row[0], row[1], row[2], row[3], filename]
+                            to_db = [row[0], row[1], row[2].upper(), row[3], filename]
                             tx.query("INSERT INTO csvs (filename, size, crc32, path, csv_name) VALUES (?,?,?,?,?);", to_db)
-                        time.sleep(1)
+                        #time.sleep(1)
                     except:
                         print pathname
                         print row[0]
