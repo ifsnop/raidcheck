@@ -43,7 +43,8 @@ config = { 'db_file' : None,
     'ready' : False,
     'timeout_status' : 600,
     'consistent_start' : True,
-    'nice'  : True
+    'nice'  : True,
+    'first_time' : False
 }
 
 class crc32(object):
@@ -333,6 +334,7 @@ def main(argv):
                 "(filename text, size integer, crc32 text, path text, csv_name text)")
             tx.query("CREATE INDEX size_idx ON csvs(size)")
             tx.query("CREATE INDEX csv_name_idx ON csvs(csv_name)")
+            config['first_time'] = True
 
         for root, dirs, files in os.walk(config['path'], topdown=True):
             for filename in files:
@@ -346,7 +348,8 @@ def main(argv):
                 #print crc('/mnt/fotos/Bang Bros Network/Haze Her/BBHHVID1/2011-09-27 - (za9220) - AXX Pledges Get it Up the Ass/za9220_3000.mp4')
                 #sys.exit(2)
                 colname = filename.split("(")[0]
-                tx.query("DELETE FROM csvs WHERE csv_name LIKE ?", [colname + '%'])
+                if not config['first_time']:
+                    tx.query("DELETE FROM csvs WHERE csv_name LIKE ?", [colname + '%'])
                 with open(pathname,'rb') as c: # `with` statement available in 2.5+
                     # csv.DictReader uses first line in file for column headings by default
                     reader = csv.reader(c, delimiter=',') # no header information with delimiter
@@ -362,8 +365,9 @@ def main(argv):
                         print row[2]
                         print row[3]
 
-        print '{0} > performing db optimization'.format(format_time())
-        tx.query("VACUUM")
+        if not config['first_time']:
+            print '{0} > performing db optimization'.format(format_time())
+            tx.query("VACUUM")
 
     return True
 

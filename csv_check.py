@@ -357,7 +357,7 @@ def main(argv):
                     else:
                         if size>10000000:
                             print 'IFQ {0} {1} {2} {3} "{4}{5}" "{6}"'.format(
-                                row['csv_name'], crc32, row['crc32'], row['size'], row['path'], row['filename'],
+                                row['csv_name'], crc32, row['crc32'], size, row['path'], row['filename'],
                                 pathname)
                             print 'IFQ {0}{1}'.format(row['path'], row['filename'])
                             print 'IFQ mv "{0}" "/mnt/fotos/unchecked/PSPar2_ForRepairs/{1}"'.format(pathname, row['filename'])
