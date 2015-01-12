@@ -33,7 +33,7 @@ from collections import defaultdict
 
 config = { 'db_file' : None,
     'recursive' : False,
-    'watch_path' : './',
+    'watch_path' : [],
     'self': None,
     'database': None,
     'vacuum': False,
@@ -405,7 +405,7 @@ def check_free_space(paths, free_bytes_limit):
     return True
 
 def calculate_speed(size, time):
-    if time>0:
+    if time>0: # and size>1000000:
         speed = format_size(size/time)
     else:
         speed = "NaN"
@@ -810,14 +810,21 @@ def get_max_verified():
 
 def stage2():
     print "{0} > update phase 2 (correct db from watch dir change)".format(format_time())
+    query = []
+    where = []
+    for path in config['watch_path']:
+        query.append(len(path)+2)
+        query.append(path + '/')
+        where.append("SUBSTR(pathnameext, 0, ?)!=?")
+    where = ' AND '.join(where)
+
     with config['database'].transaction() as tx:
-        rows = tx.query("SELECT COUNT(*) FROM files WHERE SUBSTR(pathnameext, 0, ?)!=?",
-            [len(config['watch_path']) + 2, config['watch_path'] + '/'])
+        rows = tx.query("SELECT COUNT(*) FROM files WHERE " + where, query)
         #delete = [row[0] for row in rows]
-        if (rows[0][0]!=0):
+        #print rows[0][0]
+        if rows[0][0]!=0:
             print '{0} > deleting from db not in fs because of watch dir change({1})'.format(format_time(), rows[0][0])
-            rows = tx.query("DELETE FROM files WHERE SUBSTR(pathnameext, 0, ?)!=?",
-                [len(config['watch_path']) + 2, config['watch_path'] + '/'])
+            rows = tx.query("DELETE FROM files WHERE " + where, query)
             config['vacuum'] = True
     return True
 
@@ -825,42 +832,44 @@ def stage3():
     print "{0} > update phase 3 (check for files in fs not in db)".format(format_time())
     with config['database'].transaction() as tx:
         minverified = get_min_verified()
-        for root, dirs, files in os.walk(config['watch_path'], topdown=True):
-            for name in files:
-                pathnameext = os.path.join(root, name)
-                f = get_file_stat(pathnameext)
-                if f:
-                    rows = tx.query("SELECT pathnameext, size, atime, mtime, ctime, verified, ts_create, ts_update FROM files WHERE pathnameext=?",
-                        (pathnameext,))
-                    if not rows:
-                        print "{0} > adding({1})".format(format_time(), pathnameext)
-                        tx.query("INSERT INTO files (pathnameext, size, hash, atime, mtime, ctime, verified, ts_create, ts_update, status) VALUES (?,?,?,?,?,?,?,?,?,?)",
-                            (pathnameext, f['size'], None, f['atime'], f['mtime'], f['ctime'], minverified,
-                            datetime.datetime.now(), datetime.datetime.now(), 'created',))
-                        config['consistent_start'] = False
-                    else:
-                        row = rows[0]
-                        if f['size'] != row['size']:
-                            print '{0} > updating with modified file({1})'.format(format_time(), pathnameext)
-                            tx.query("UPDATE files SET size=?, hash=?, atime=?, mtime=?, ctime=?, verified=?, ts_update=?, status=? WHERE pathnameext=?",
-                                (f['size'], None, f['atime'], f['mtime'], f['ctime'], minverified,
-                                datetime.datetime.now(), 'created', row['pathnameext'],))
+        for path in config['watch_path']:
+            for root, dirs, files in os.walk(path, topdown=True):
+                for name in files:
+                    pathnameext = os.path.join(root, name)
+                    f = get_file_stat(pathnameext)
+                    if f:
+                        rows = tx.query("SELECT pathnameext, size, atime, mtime, ctime, verified, ts_create, ts_update FROM files WHERE pathnameext=?",
+                            (pathnameext,))
+                        if not rows:
+                            print "{0} > adding({1})".format(format_time(), pathnameext)
+                            tx.query("INSERT INTO files (pathnameext, size, hash, atime, mtime, ctime, verified, ts_create, ts_update, status) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                                (pathnameext, f['size'], None, f['atime'], f['mtime'], f['ctime'], minverified,
+                                datetime.datetime.now(), datetime.datetime.now(), 'created',))
                             config['consistent_start'] = False
-                        elif f['mtime'] != row['mtime'] or f['ctime'] != row['ctime']:
-                            if f['mtime'] != row['mtime'] and f['ctime'] != row['ctime']:
+                        else:
+                            row = rows[0]
+                            if f['size'] != row['size']:
                                 print '{0} > updating with modified file({1})'.format(format_time(), pathnameext)
                                 tx.query("UPDATE files SET size=?, hash=?, atime=?, mtime=?, ctime=?, verified=?, ts_update=?, status=? WHERE pathnameext=?",
                                     (f['size'], None, f['atime'], f['mtime'], f['ctime'], minverified,
                                     datetime.datetime.now(), 'created', row['pathnameext'],))
                                 config['consistent_start'] = False
-                            elif f['mtime'] != row['mtime']:
-                                print '{0} > (can\'t happen, ctime should me modified also) updating with modified file({1})'.format(format_time(), pathnameext)
-                            elif f['ctime'] != row['ctime']:
-                                print '{0} > updating inode information from file({1})'.format(format_time(), pathnameext)
-                                tx.query("UPDATE files SET ctime=?, ts_update=? WHERE pathnameext=?",
-                                    [f['ctime'], datetime.datetime.now(), row['pathnameext']])
-                else:
-                    print '{0} > file({1}) can\'t be found, ignoring'.format(format_time(), pathnameext)
+                            elif f['mtime'] != row['mtime'] or f['ctime'] != row['ctime']:
+                                if f['mtime'] != row['mtime'] and f['ctime'] != row['ctime']:
+                                    print '{0} > updating with modified file({1})'.format(format_time(), pathnameext)
+                                    tx.query("UPDATE files SET size=?, hash=?, atime=?, mtime=?, ctime=?, verified=?, ts_update=?, status=? WHERE pathnameext=?",
+                                        (f['size'], None, f['atime'], f['mtime'], f['ctime'], minverified,
+                                        datetime.datetime.now(), 'created', row['pathnameext'],))
+                                    config['consistent_start'] = False
+                                elif f['mtime'] != row['mtime']:
+                                    print '{0} > (can\'t happen, ctime should me modified also) updating with modified file({1})'.format(format_time(), pathnameext)
+                                elif f['ctime'] != row['ctime']:
+                                    print '{0} > updating inode information from file({1})'.format(format_time(), pathnameext)
+                                    tx.query("UPDATE files SET ctime=?, ts_update=? WHERE pathnameext=?",
+                                        [f['ctime'], datetime.datetime.now(), row['pathnameext']])
+                    else:
+                        print '{0} > file({1}) can\'t be found, ignoring'.format(format_time(), pathnameext)
+
     return True
 
 def stage4():
@@ -868,35 +877,36 @@ def stage4():
     #uwatch_path = unicode(config['watch_path'], sys.getfilesystemencoding())
     with config['database'].transaction() as tx:
         minverified = get_min_verified()
-        rows = tx.query("SELECT pathnameext, size, hash, atime, mtime, ctime, verified, ts_create, ts_update, status FROM files WHERE SUBSTR(pathnameext, 0, ?)=?",
-            [len(config['watch_path']) + 2, config['watch_path'] + '/'])
-        for row in rows:
-            f = get_file_stat(row['pathnameext'])
-            if not 'size' in f: # realmente cont "not f:" también debería funcionar
-                #print '{0} > deleting({1})'.format(format_time(), row['pathnameext'])
-                remove_from_db(row['pathnameext'])
-                #tx.query("DELETE FROM files WHERE pathnameext=?", (row['pathnameext'],))
-                config['vacuum'] = True
-                config['consistent_start'] = False
-            elif f['size'] != row['size']:
-                print '{0} > updating with modified file({1})'.format(format_time(), pathnameext)
-                tx.query("UPDATE files SET size=?, hash=?, atime=?, mtime=?, ctime=?, verified=?, ts_update=?, status=? WHERE pathnameext=?",
-                    (f['size'], None, f['atime'], f['mtime'], f['ctime'], minverified,
-                    datetime.datetime.now(), 'created', row['pathnameext'],))
-                config['consistent_start'] = False
-            elif f['mtime'] != row['mtime'] or f['ctime'] != row['ctime']:
-                if f['mtime'] != row['mtime'] and f['ctime'] != row['ctime']:
-                    print '{0} > updating with modified file({1})'.format(format_time(), row['pathnameext'])
+        for path in config['watch_path']:
+            rows = tx.query("SELECT pathnameext, size, hash, atime, mtime, ctime, verified, ts_create, ts_update, status FROM files WHERE SUBSTR(pathnameext, 0, ?)=?",
+                [len(path) + 2, path + '/'])
+            for row in rows:
+                f = get_file_stat(row['pathnameext'])
+                if not 'size' in f: # realmente cont "not f:" también debería funcionar
+                    #print '{0} > deleting({1})'.format(format_time(), row['pathnameext'])
+                    remove_from_db(row['pathnameext'])
+                    #tx.query("DELETE FROM files WHERE pathnameext=?", (row['pathnameext'],))
+                    config['vacuum'] = True
+                    config['consistent_start'] = False
+                elif f['size'] != row['size']:
+                    print '{0} > updating with modified file({1})'.format(format_time(), pathnameext)
                     tx.query("UPDATE files SET size=?, hash=?, atime=?, mtime=?, ctime=?, verified=?, ts_update=?, status=? WHERE pathnameext=?",
                         (f['size'], None, f['atime'], f['mtime'], f['ctime'], minverified,
                         datetime.datetime.now(), 'created', row['pathnameext'],))
                     config['consistent_start'] = False
-                elif f['mtime'] != row['mtime']:
-                    print '{0} > (can\'t happen, ctime should me modified also) updating with modified file({1})'.format(format_time(), row['pathnameext'])
-                elif f['ctime'] != row['ctime']:
-                    print '{0} > updating inode information from file({1})'.format(format_time(), row['pathnameext'])
-                    tx.query("UPDATE files SET ctime=?, ts_update=? WHERE pathnameext=?",
-                        [f['ctime'], datetime.datetime.now(), row['pathnameext']])
+                elif f['mtime'] != row['mtime'] or f['ctime'] != row['ctime']:
+                    if f['mtime'] != row['mtime'] and f['ctime'] != row['ctime']:
+                        print '{0} > updating with modified file({1})'.format(format_time(), row['pathnameext'])
+                        tx.query("UPDATE files SET size=?, hash=?, atime=?, mtime=?, ctime=?, verified=?, ts_update=?, status=? WHERE pathnameext=?",
+                            (f['size'], None, f['atime'], f['mtime'], f['ctime'], minverified,
+                            datetime.datetime.now(), 'created', row['pathnameext'],))
+                        config['consistent_start'] = False
+                    elif f['mtime'] != row['mtime']:
+                        print '{0} > (can\'t happen, ctime should me modified also) updating with modified file({1})'.format(format_time(), row['pathnameext'])
+                    elif f['ctime'] != row['ctime']:
+                        print '{0} > updating inode information from file({1})'.format(format_time(), row['pathnameext'])
+                        tx.query("UPDATE files SET ctime=?, ts_update=? WHERE pathnameext=?",
+                            [f['ctime'], datetime.datetime.now(), row['pathnameext']])
 
         #rows = tx.query("SELECT COUNT(*) FROM files WHERE SUBSTR(pathnameext, 0, ?)!=?",
         #    [len(config['watch_path']) + 2, config['watch_path'] + '/'])
@@ -929,7 +939,7 @@ def main(argv):
         print '    [-h|--help]'
         print '    -d|--db-file <file>'
         print '    [-r|--recursive]'
-        print '    [-w|--watch-path <path>]'
+        print '    -w|--watch-path <path>'
         print
         print 'Starts automatic filesystem monitoring'
         print
@@ -938,7 +948,7 @@ def main(argv):
         print '    -r, --recursive          descent into subdirectories, optional'
         print '                             defaults to', str(config['recursive'])
         print '    -w, --watch-path <path>  where to look for new files, optional'
-        print '                             defaults to \'' + config['watch_path'] + '\''
+        print '                             accepts several path, repeat as desired'
 
     try:
         opts, args = getopt.getopt(argv[1:], 'hd:rw:', ['help',
@@ -955,22 +965,25 @@ def main(argv):
         elif opt in ('-d', '--db-file'):
             config['db_file'] = arg
         elif opt in ('-w', '--watch-path'):
-            config['watch_path'] = os.path.abspath(arg)
-            if not os.path.isdir(config['watch_path']):
-                print '{0} > specified path({1}) does not exists'.format(format_time(), config['watch_path'])
+            if not os.path.isdir(os.path.abspath(arg)):
+                print '{0} > specified path({1}) does not exists'.format(format_time(), os.path.abspath(arg))
                 usage()
                 sys.exit(2)
+            config['watch_path'].append(os.path.abspath(arg))
 
     config['self'] = argv[0]
-
-    print '{0} > {1} init'.format(format_time(), config['self'])
-    print '{0} > options: db-file({1})'.format(format_time(), config['db_file'])
-    print '{0} > options: recursive({1})'.format(format_time(), config['recursive'])
-    print '{0} > options: watch-path({1}) free_bytes({2})'.format(format_time(), config['watch_path'], format_size(get_free_space_bytes(config['watch_path'])))
 
     if config['db_file'] is None:
         usage()
         sys.exit()
+
+    if config['watch_path'] is None:
+        usage()
+        sys.exit()
+
+    print '{0} > {1} init'.format(format_time(), config['self'])
+    print '{0} > options: db-file({1})'.format(format_time(), config['db_file'])
+    print '{0} > options: recursive({1})'.format(format_time(), config['recursive'])
 
     config['database'] = Database(config['db_file'])
     transaction = Transaction(config['database'])
@@ -983,11 +996,16 @@ def main(argv):
         pyinotify.IN_MOVE_SELF
     # |\
     #mask = pyinotify.ALL_EVENTS
-    wm.add_watch(config['watch_path'],
-        mask,
-        rec=config['recursive'],
-        auto_add=config['recursive'])
-    #on_loop_func = functools.partial(on_loop, counter=Counter())
+
+    for path in config['watch_path']:
+        print '{0} > options: watch-path({1}) free_bytes({2})'.format(format_time(), path, format_size(get_free_space_bytes(path)))
+
+        wm.add_watch(config['watch_path'],
+            mask,
+            rec=config['recursive'],
+            auto_add=config['recursive'])
+        #on_loop_func = functools.partial(on_loop, counter=Counter())
+
     stage1()
     stage2()
     stage3()
