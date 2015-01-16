@@ -4,7 +4,7 @@
 """ monitord.py - Hashes files using inotify events."""
 
 __author__ = "Diego Torres"
-__copyright__ = "Copyright (C) 2014 Diego Torres <diego dot torres at gmail dot com>"
+__copyright__ = "Copyright (C) 2015 Diego Torres <diego dot torres at gmail dot com>"
 
 # Requires Python >= 2.7
 
@@ -33,7 +33,8 @@ from collections import defaultdict
 
 config = { 'db_file' : None,
     'recursive' : False,
-    'watch_path' : [],
+    'watch_path' : [],          # list of watched paths
+    'wd' :  {},                 # dict of watched descriptors
     'self': None,
     'database': None,
     'vacuum': False,
@@ -44,6 +45,7 @@ config = { 'db_file' : None,
     'consistent_start' : True,
     'nice'  : True
 }
+
 
 class Transaction(object):
     """A context manager for safe, concurrent access to the database.
@@ -1000,10 +1002,10 @@ def main(argv):
     for path in config['watch_path']:
         print '{0} > options: watch-path({1}) free_bytes({2})'.format(format_time(), path, format_size(get_free_space_bytes(path)))
 
-        wm.add_watch(config['watch_path'],
-            mask,
-            rec=config['recursive'],
-            auto_add=config['recursive'])
+    config['wd'] = wm.add_watch(config['watch_path'],
+        mask,
+        rec=config['recursive'],
+        auto_add=config['recursive'])
         #on_loop_func = functools.partial(on_loop, counter=Counter())
 
     stage1()
