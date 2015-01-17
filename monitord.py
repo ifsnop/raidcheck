@@ -1008,6 +1008,11 @@ def main(argv):
         auto_add=config['recursive'])
         #on_loop_func = functools.partial(on_loop, counter=Counter())
 
+    for key in config['wd']:
+        if config['wd'][key] == -1:
+            print '{0} > couldn\'t open path({1})'.format(format_time(), key)
+
+
     stage1()
     stage2()
     stage3()
