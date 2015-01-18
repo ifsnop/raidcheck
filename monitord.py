@@ -362,9 +362,14 @@ def get_file_stat(file):
             print '{0} unexpected error({1}) when stat\'ing file({2})'.format(
                 format_time(), e.strerror, file)
             raise
-        #else:
+        else:
             #f = None
-            #print "some file/dir was deleted, so no stat possible"
+            print '{0} file({1}) was deleted'.format(
+                format_time(), file)
+    except Exception as e:
+        print '{0} file({1}) raised and unhandled exception type({2}) args({3})'.format(
+            format_time(), file, type(e), e.args)
+
     return f
 
 def format_time():
@@ -372,7 +377,7 @@ def format_time():
     s = t.strftime('%Y-%m-%d %H:%M:%S.%f')
     tail = s[-7:]
     f = str('%0.3f' % round(float(tail),3))[2:]
-    return '%s.%s' % (s[:-7], f)
+    return '%s.%s|%s' % (s[:-7], f, threading.current_thread().name)
 
 def format_size(num):
     """Human friendly file size"""
@@ -427,8 +432,8 @@ def hash_file(filename):
     return None
 
 class BGWorkerQueuer(threading.Thread):
-    def __init__(self, config):
-        threading.Thread.__init__(self)
+    def __init__(self, config, name):
+        threading.Thread.__init__(self, name = name)
         self.config = config
         print '{0} > bgworkerQueuer spawned'.format(format_time())
 
@@ -474,9 +479,13 @@ class BGWorkerQueuer(threading.Thread):
             #    minverified = rows[0]['min'];
 
             if f['event'] == 'IN_CLOSE_WRITE':
+
+                if f['size'] is None:
+                    print '{0} > event(A0) file({1}) has None size, see before, we should return now'.format(format_time(), f['pathnameext'])
+
                 rows = tx.query("SELECT pathnameext FROM files WHERE pathnameext=?", (f['pathnameext'],))
                 if not rows:
-                    print '{0} > event(A) adding({1})'.format(format_time(), f['pathnameext'])
+                    print '{0} > event(A1) adding({1})'.format(format_time(), f['pathnameext'])
                     tx.query("INSERT INTO files (pathnameext, size, hash, atime, mtime, ctime, verified, ts_create, ts_update, status) VALUES (?,?,?,?,?,?,?,?,?,?)",
                         [f['pathnameext'], f['size'], None, f['atime'], f['mtime'], f['ctime'], minverified,
                         datetime.datetime.now(), datetime.datetime.now(), 'created'])
@@ -495,7 +504,6 @@ class BGWorkerQueuer(threading.Thread):
                     ['deleted_hashed;' + str(f['cookie']), datetime.datetime.now(), f['pathnameext'], 'hashed'])
                 tx.query("UPDATE files SET status=?, ts_update=? WHERE pathnameext=? AND status=?",
                     ['deleted_created;' + str(f['cookie']), datetime.datetime.now(), f['pathnameext'], 'created'])
-
 
             elif f['event'] == 'IN_MOVED_FROM|IN_ISDIR' and not f['src']: # directory was moved away from watched dir, delete all files inside directory from database
                 dir_path = f['pathnameext'] + '/'
@@ -579,8 +587,8 @@ class BGWorkerQueuer(threading.Thread):
 
 class BGWorkerHasher(threading.Thread):
 
-    def __init__(self, config):
-        threading.Thread.__init__(self)
+    def __init__(self, config, name):
+        threading.Thread.__init__(self, name = name)
         self.config = config
         print '{0} > bgworkerHasher spawned'.format(format_time())
 
@@ -635,8 +643,8 @@ class BGWorkerHasher(threading.Thread):
 
 class BGWorkerVerifier(threading.Thread):
 
-    def __init__(self, config):
-        threading.Thread.__init__(self)
+    def __init__(self, config, name):
+        threading.Thread.__init__(self, name = name)
         self.config = config
         print '{0} > bgworkerVerifier spawned'.format(format_time())
 
@@ -709,8 +717,8 @@ class BGWorkerVerifier(threading.Thread):
 """
 class BGWorkerStatus(threading.Thread):
 
-    def __init__(self, config):
-        threading.Thread.__init__(self)
+    def __init__(self, config, name):
+        threading.Thread.__init__(self, name = name)
         self.config = config
         self.created = None
         self.hashed = None
@@ -1024,13 +1032,18 @@ def main(argv):
 
     #sys.exit()
 
-    thread_BGWorkerQueuer = BGWorkerQueuer(config)
-    thread_BGWorkerQueuer.start()
-    thread_BGWorkerHasher = BGWorkerHasher(config)
+    thread_BGWorkerQueuer1 = BGWorkerQueuer(config, "q1")
+    thread_BGWorkerQueuer1.start()
+    thread_BGWorkerQueuer2 = BGWorkerQueuer(config, "q2")
+    thread_BGWorkerQueuer2.start()
+    thread_BGWorkerQueuer3 = BGWorkerQueuer(config, "q3")
+    thread_BGWorkerQueuer3.start()
+
+    thread_BGWorkerHasher = BGWorkerHasher(config, "h")
     thread_BGWorkerHasher.start()
-    thread_BGWorkerStatus = BGWorkerStatus(config)
+    thread_BGWorkerStatus = BGWorkerStatus(config, "s")
     thread_BGWorkerStatus.start()
-    thread_BGWorkerVerifier = BGWorkerVerifier(config)
+    thread_BGWorkerVerifier = BGWorkerVerifier(config, "v")
     thread_BGWorkerVerifier.start()
 
     try:
@@ -1056,9 +1069,12 @@ def main(argv):
 
     notifier.stop()
 
-    thread_BGWorkerQueuer.join()
+    thread_BGWorkerQueuer1.join()
+    thread_BGWorkerQueuer2.join()
+    thread_BGWorkerQueuer3.join()
     thread_BGWorkerHasher.join()
     thread_BGWorkerStatus.join()
+    thread_BGWorkerVerifier.join()
 
     return
 
