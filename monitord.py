@@ -740,15 +740,16 @@ class BGWorkerStatus(threading.Thread):
                     print "{0} > fixing {1} file(s) hashed without hash".format(format_time(), rows[0]['count'])
                     tx.query("UPDATE files SET hash = NULL, status=?, verified=?, ts_update=? WHERE hash IS NULL AND status=?",
                         ['created', minverified, datetime.datetime.now(), 'hashed'])
+                    minverified = get_min_verified()
 
                 rowsc = tx.query("SELECT COUNT(*) as count, SUM(size) as size FROM files WHERE status=?", ('created',))
                 rowsh = tx.query("SELECT COUNT(*) as count, SUM(size) as size FROM files WHERE status=?", ('hashed',))
-                rowsv = tx.query("SELECT COUNT(*) as count FROM files WHERE status=? AND verified=(SELECT MIN(verified) FROM files WHERE status=?)",
-                    ['hashed','hashed'])
+                rowsv = tx.query("SELECT COUNT(*) as count FROM files WHERE status=? AND verified=?",
+                    ['hashed', minverified])
                 created = rowsc[0]['count'] #[row[0] for row in rows1]
                 hashed = rowsh[0]['count'] #[row[0] for row in rows2]
                 verified = rowsv[0]['count']
-                minverified = get_min_verified()
+
                 maxverified = get_max_verified()
                 #rows = tx.query("SELECT MIN(verified) AS min FROM files WHERE status=?",['hashed']);
                 #minverified = rows[0]['min']
@@ -763,7 +764,7 @@ class BGWorkerStatus(threading.Thread):
                     print "{0} > {1} files hashed using {2}".format(
                         format_time(), hashed, format_size(rowsh[0]['size']))
                     print "{0} > {1}/{2} files pending verification until next round min/max ratio ({3}/{4})".format(
-                        format_time(),  verified, hashed, minverified, maxverified)
+                        format_time(),  verified+created, hashed, minverified, maxverified)
                     self.hashed = hashed
                     self.created = created
                     self.verified = verified
