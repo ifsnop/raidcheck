@@ -358,14 +358,15 @@ def get_file_stat(file):
             f['ctime'] = 0
 
     except OSError as e:
-        if e.errno != errno.ENOENT: # if error different from not found
+        if e.errno == errno.ENOENT:
+            #f = None
+            #print '{0} file({1}) was deleted'.format(
+            #    format_time(), file)
+            return f
+        else: # if error different from not found
             print '{0} unexpected error({1}) when stat\'ing file({2})'.format(
                 format_time(), e.strerror, file)
             raise
-        else:
-            #f = None
-            print '{0} file({1}) was deleted'.format(
-                format_time(), file)
     except Exception as e:
         print '{0} file({1}) raised and unhandled exception type({2}) args({3})'.format(
             format_time(), file, type(e), e.args)
@@ -443,14 +444,28 @@ class BGWorkerQueuer(threading.Thread):
         #print '{0} > bgworkerQueuer ready'.format(format_time())
         while not self.config['salir']:
             #print '{0} > tic'.format(format_time())
+            time0 = None
+            i = 0
             while not self.config['queue'].empty():
+                if time0 is None:
+                    time0 = time.time()
                 item = self.config['queue'].get()
                 # only insert in database if file/dir was stated successfully
                 #if item['size'] is not None:
                 # removed files need to be updated from database and have no size
                 self.update_database(item)
-            time.sleep(1)
+                i += 1
+                if i>10:
+                    break
+            if time0 is None:
+                time.sleep(1)
+            else :
+                time1 = time.time() - time0
+                print '{0} > procesing for {1:.2f} secs'.format(format_time(), time1)
+                sys.stdout.flush()
+
         print '{0} > bgworkerQueuer ended'.format(format_time())
+        sys.stdout.flush()
         return True
 
     def update_database(self, f):
@@ -482,18 +497,39 @@ class BGWorkerQueuer(threading.Thread):
 
                 if f['size'] is None:
                     print '{0} > event(A0) file({1}) has None size, see before, we should return now'.format(format_time(), f['pathnameext'])
+                    return
 
-                rows = tx.query("SELECT pathnameext FROM files WHERE pathnameext=?", (f['pathnameext'],))
+                rows = tx.query("SELECT pathnameext, size, atime, mtime, ctime FROM files WHERE pathnameext=?", (f['pathnameext'],))
                 if not rows:
                     print '{0} > event(A1) adding({1})'.format(format_time(), f['pathnameext'])
                     tx.query("INSERT INTO files (pathnameext, size, hash, atime, mtime, ctime, verified, ts_create, ts_update, status) VALUES (?,?,?,?,?,?,?,?,?,?)",
                         [f['pathnameext'], f['size'], None, f['atime'], f['mtime'], f['ctime'], minverified,
                         datetime.datetime.now(), datetime.datetime.now(), 'created'])
                 else:
-                    print '{0} > event(B) updating({1})'.format(format_time(), f['pathnameext'])
-                    tx.query("UPDATE files SET size=?, hash=?, atime=?, mtime=?, ctime=?, verified=?, ts_update=?, status=? WHERE pathnameext=?",
-                        [f['size'], None, f['atime'], f['mtime'], f['ctime'], minverified,
-                        datetime.datetime.now(), 'created', f['pathnameext']])
+                    row = rows[0] # duplicated code from stage3()
+                    if f['size'] != row['size']:
+                        print '{0} > event(B1) updating ({1}) because file was modified'.format(format_time(), row['pathnameext'])
+                        tx.query("UPDATE files SET size=?, hash=?, atime=?, mtime=?, ctime=?, verified=?, ts_update=?, status=? WHERE pathnameext=?",
+                            (f['size'], None, f['atime'], f['mtime'], f['ctime'], minverified,
+                            datetime.datetime.now(), 'created', row['pathnameext'],))
+                        #config['consistent_start'] = False
+                    elif f['mtime'] != row['mtime'] or f['ctime'] != row['ctime']:
+                        if f['mtime'] != row['mtime'] and f['ctime'] != row['ctime']:
+                            print '{0} > event(B2) updating with modified file({1})'.format(format_time(), row['pathnameext'])
+                            tx.query("UPDATE files SET size=?, hash=?, atime=?, mtime=?, ctime=?, verified=?, ts_update=?, status=? WHERE pathnameext=?",
+                                (f['size'], None, f['atime'], f['mtime'], f['ctime'], minverified,
+                                datetime.datetime.now(), 'created', row['pathnameext'],))
+                            #config['consistent_start'] = False
+                        elif f['mtime'] != row['mtime']:
+                            print '{0} > event(B3) (can\'t happen, ctime should me modified also) updating with modified file({1})'.format(format_time(), row['pathnameext'])
+                        elif f['ctime'] != row['ctime']:
+                            print '{0} > event(B4) updating inode information from file({1})'.format(format_time(), row['pathnameext'])
+                            tx.query("UPDATE files SET ctime=?, ts_update=? WHERE pathnameext=?",
+                                [f['ctime'], datetime.datetime.now(), row['pathnameext']])
+
+                    #tx.query("UPDATE files SET size=?, hash=?, atime=?, mtime=?, ctime=?, verified=?, ts_update=?, status=? WHERE pathnameext=?",
+                    #    [f['size'], None, f['atime'], f['mtime'], f['ctime'], minverified,
+                    #    datetime.datetime.now(), 'created', f['pathnameext']])
 
             elif f['event'][:9] == 'IN_DELETE':
                 print '{0} > event(C) deleting({1})'.format(format_time(), f['pathnameext'])
@@ -608,10 +644,12 @@ class BGWorkerHasher(threading.Thread):
                     self.store_hash(pathnameext, hash)
                     if self.config['nice']:
                         time.sleep(1)
+                sys.stdout.flush()
             else:
                 time.sleep(1)
 
         print '{0} > bgworkerHasher ended'.format(format_time())
+        sys.stdout.flush()
         return True
 
     def get_file(self):
@@ -660,6 +698,7 @@ class BGWorkerVerifier(threading.Thread):
                         remove_from_db(pathnameext)
                     else:
                         self.verify_hash(pathnameext, hash)
+                        sys.stdout.flush()
                     for i in range(60):
                         if self.config['salir']:
                             break
@@ -669,6 +708,7 @@ class BGWorkerVerifier(threading.Thread):
             time.sleep(1)
 
         print '{0} > bgworkerVerifier ended'.format(format_time())
+        sys.stdout.flush()
         return True
 
     def get_file(self):
@@ -765,6 +805,7 @@ class BGWorkerStatus(threading.Thread):
                 #maxverified = rows[0]['max']
 
                 if hashed != self.hashed or created != self.created or verified != self.verified or deleted != self.deleted:
+                    print "{0} > approximate queue size {1}".format(format_time(), config['queue'].qsize())
                     print "{0} > {1} files deleted using {2} have been purged".format(
                         format_time(), deleted, format_size(rowsd[0]['size']))
                     print "{0} > {1} files created using {2}".format(
@@ -777,6 +818,7 @@ class BGWorkerStatus(threading.Thread):
                     self.created = created
                     self.verified = verified
                     self.deleted = deleted
+            sys.stdout.flush()
             if (self.created == 0): # don't start verifing files until there are files to verify
                 self.config['ready'] = True
             else:
@@ -786,7 +828,9 @@ class BGWorkerStatus(threading.Thread):
                     break
                 else:
                     time.sleep(1)
+
         print "{0} > bgworkerStatus ended".format(format_time())
+        sys.stdout.flush()
         return True
 
 def stage1():
@@ -937,7 +981,7 @@ def stage4():
 def remove_from_db(pathnameext):
 
     with config['database'].transaction() as tx:
-        print '{0} > searching for deletion ({1})'.format(format_time(), pathnameext)
+        #print '{0} > searching for deletion ({1})'.format(format_time(), pathnameext)
         rows = tx.query("SELECT pathnameext FROM files WHERE pathnameext=?", [pathnameext])
         if rows:
             print '{0} > deleting({1}) from database'.format(format_time(), pathnameext)
@@ -992,6 +1036,8 @@ def main(argv):
         usage()
         sys.exit()
 
+    threading.current_thread().setName('m')
+
     print '{0} > {1} init'.format(format_time(), config['self'])
     print '{0} > options: db-file({1})'.format(format_time(), config['db_file'])
     print '{0} > options: recursive({1})'.format(format_time(), config['recursive'])
@@ -1021,23 +1067,26 @@ def main(argv):
         if config['wd'][key] == -1:
             print '{0} > couldn\'t open path({1})'.format(format_time(), key)
 
-
     stage1()
+    sys.stdout.flush()
     stage2()
+    sys.stdout.flush()
     stage3()
+    sys.stdout.flush()
     stage4()
+    sys.stdout.flush()
+
     if not config['consistent_start']:
         print '{0} > database was not in a consistent state, fixed'.format(format_time())
 
 
-    #sys.exit()
-
-    thread_BGWorkerQueuer1 = BGWorkerQueuer(config, "q1")
+    thread_BGWorkerQueuer1 = BGWorkerQueuer(config, "q")
     thread_BGWorkerQueuer1.start()
-    thread_BGWorkerQueuer2 = BGWorkerQueuer(config, "q2")
-    thread_BGWorkerQueuer2.start()
-    thread_BGWorkerQueuer3 = BGWorkerQueuer(config, "q3")
-    thread_BGWorkerQueuer3.start()
+
+    #thread_BGWorkerQueuer2 = BGWorkerQueuer(config, "q2")
+    #thread_BGWorkerQueuer2.start()
+    #thread_BGWorkerQueuer3 = BGWorkerQueuer(config, "q3")
+    #thread_BGWorkerQueuer3.start()
 
     thread_BGWorkerHasher = BGWorkerHasher(config, "h")
     thread_BGWorkerHasher.start()
@@ -1069,12 +1118,16 @@ def main(argv):
 
     notifier.stop()
 
+    sys.stdout.flush()
+
     thread_BGWorkerQueuer1.join()
-    thread_BGWorkerQueuer2.join()
-    thread_BGWorkerQueuer3.join()
-    thread_BGWorkerHasher.join()
-    thread_BGWorkerStatus.join()
-    thread_BGWorkerVerifier.join()
+    ##thread_BGWorkerQueuer2.join()
+    ##thread_BGWorkerQueuer3.join()
+    #thread_BGWorkerHasher.join()
+    #thread_BGWorkerStatus.join()
+    #thread_BGWorkerVerifier.join()
+
+    sys.stdout.flush()
 
     return
 
