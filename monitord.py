@@ -43,7 +43,7 @@ config = { 'db_file' : None,
     'ready' : False,
     'timeout_status' : 600,
     'consistent_start' : True,
-    'nice'  : True
+    'nice'  : True              # sleep 0.1s between hashes
 }
 
 
@@ -643,7 +643,7 @@ class BGWorkerHasher(threading.Thread):
                     #print '{0} > ({1}) => hash({2})'.format(format_time(), pathnameext, hash)
                     self.store_hash(pathnameext, hash)
                     if self.config['nice']:
-                        time.sleep(1)
+                        time.sleep(0.1)
                 sys.stdout.flush()
             else:
                 time.sleep(1)
