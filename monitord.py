@@ -521,7 +521,11 @@ class BGWorkerQueuer(threading.Thread):
                                 datetime.datetime.now(), 'created', row['pathnameext'],))
                             #config['consistent_start'] = False
                         elif f['mtime'] != row['mtime']:
-                            print '{0} > event(B3) (can\'t happen, ctime should me modified also) updating with modified file({1})'.format(format_time(), row['pathnameext'])
+                            #print '{0} > event(B3) (can\'t happen, ctime should be modified also) updating with modified file({1})'.format(format_time(), row['pathnameext'])
+                            print '{0} > event(B3) (mtime only) updating with modified file({1})'.format(format_time(), pathnameext)
+                            tx.query("UPDATE files SET size=?, hash=?, atime=?, mtime=?, ctime=?, verified=?, ts_update=?, status=? WHERE pathnameext=?",
+                                (f['size'], None, f['atime'], f['mtime'], f['ctime'], minverified,
+                                datetime.datetime.now(), 'created', row['pathnameext'],))
                         elif f['ctime'] != row['ctime']:
                             print '{0} > event(B4) updating inode information from file({1})'.format(format_time(), row['pathnameext'])
                             tx.query("UPDATE files SET ctime=?, ts_update=? WHERE pathnameext=?",
@@ -921,7 +925,12 @@ def stage3():
                                         datetime.datetime.now(), 'created', row['pathnameext'],))
                                     config['consistent_start'] = False
                                 elif f['mtime'] != row['mtime']:
-                                    print '{0} > (can\'t happen, ctime should me modified also) updating with modified file({1})'.format(format_time(), pathnameext)
+                                    #print '{0} > event(B3) (can\'t happen, ctime should be modified also) updating with modified file({1})'.format(format_time(), row['pathnameext'])
+                                    print '{0} > (mtime only) updating with modified file({1})'.format(format_time(), pathnameext)
+                                    tx.query("UPDATE files SET size=?, hash=?, atime=?, mtime=?, ctime=?, verified=?, ts_update=?, status=? WHERE pathnameext=?",
+                                        (f['size'], None, f['atime'], f['mtime'], f['ctime'], minverified,
+                                        datetime.datetime.now(), 'created', row['pathnameext'],))
+                                    config['consistent_start'] = False
                                 elif f['ctime'] != row['ctime']:
                                     print '{0} > updating inode information from file({1})'.format(format_time(), pathnameext)
                                     tx.query("UPDATE files SET ctime=?, ts_update=? WHERE pathnameext=?",
