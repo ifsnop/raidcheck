@@ -573,6 +573,10 @@ class BGWorkerQueuer(threading.Thread):
 
                 else:
                     # moved and not in database, but check before
+                    if f['size'] is None:
+                        print '{0} > event(F0) file({1}) has None size, see before, we should return now'.format(format_time(), f['pathnameext'])
+                        return
+
                     print '{0} > event(F) adding({1})'.format(format_time(), f['pathnameext'])
                     rows = tx.query("SELECT pathnameext, status FROM files WHERE pathnameext=?", [f['pathnameext']])
                     if rows:
