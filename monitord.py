@@ -30,6 +30,7 @@ import contextlib
 import collections
 from contextlib import contextmanager
 from collections import defaultdict
+import resource
 
 config = { 'db_file' : None,
     'recursive' : False,
@@ -1054,6 +1055,11 @@ def main(argv):
     print '{0} > {1} init'.format(format_time(), config['self'])
     print '{0} > options: db-file({1})'.format(format_time(), config['db_file'])
     print '{0} > options: recursive({1})'.format(format_time(), config['recursive'])
+
+    resource.setrlimit(resource.RLIMIT_NOFILE, (16384, 16384))
+
+    print '{0} > max open files configured to soft,hard{1}'.format(
+        format_time(), (resource.getrlimit(resource.RLIMIT_NOFILE)))
 
     config['database'] = Database(config['db_file'])
     transaction = Transaction(config['database'])
