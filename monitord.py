@@ -44,7 +44,7 @@ config = { 'db_file' : None,
     'ready' : False,
     'timeout_status' : 600,
     'consistent_start' : True,
-    'nice'  : True              # sleep 0.1s between hashes
+    'nice'  : False             # sleep 0.1s between hashes
 }
 
 
@@ -887,7 +887,7 @@ def stage2():
         #delete = [row[0] for row in rows]
         #print rows[0][0]
         if rows[0][0]!=0:
-            print '{0} > deleting from db not in fs because of watch dir change({1})'.format(format_time(), rows[0][0])
+            print '{0} > deleting from db the files that are not in fs because of watch dir change({1})'.format(format_time(), rows[0][0])
             rows = tx.query("DELETE FROM files WHERE " + where, query)
             config['vacuum'] = True
     return True
@@ -1082,14 +1082,25 @@ def main(argv):
         auto_add=config['recursive'])
         #on_loop_func = functools.partial(on_loop, counter=Counter())
 
+    abort = False
     for key in config['wd']:
         if config['wd'][key] == -1:
             print '{0} > couldn\'t open path({1})'.format(format_time(), key)
+            abort = True
+
+    if abort:
+        print '{0} > error creating watches, maybe you should try:'.format(format_time())
+        print 'sysctl -n -w fs.inotify.max_user_watches=16384'
+        sys.exit(-1);
 
     stage1()
     sys.stdout.flush()
     stage2()
     sys.stdout.flush()
+
+    thread_BGWorkerQueuer1 = BGWorkerQueuer(config, "q")
+    thread_BGWorkerQueuer1.start()
+
     stage3()
     sys.stdout.flush()
     stage4()
@@ -1099,8 +1110,6 @@ def main(argv):
         print '{0} > database was not in a consistent state, fixed'.format(format_time())
 
 
-    thread_BGWorkerQueuer1 = BGWorkerQueuer(config, "q")
-    thread_BGWorkerQueuer1.start()
 
     #thread_BGWorkerQueuer2 = BGWorkerQueuer(config, "q2")
     #thread_BGWorkerQueuer2.start()
@@ -1142,9 +1151,9 @@ def main(argv):
     thread_BGWorkerQueuer1.join()
     ##thread_BGWorkerQueuer2.join()
     ##thread_BGWorkerQueuer3.join()
-    #thread_BGWorkerHasher.join()
-    #thread_BGWorkerStatus.join()
-    #thread_BGWorkerVerifier.join()
+    thread_BGWorkerHasher.join()
+    thread_BGWorkerStatus.join()
+    thread_BGWorkerVerifier.join()
 
     sys.stdout.flush()
 
