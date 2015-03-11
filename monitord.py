@@ -32,6 +32,7 @@ from contextlib import contextmanager
 from collections import defaultdict
 import resource
 import shutil
+import signal
 
 config = { 'db_file' : None,
     'recursive' : False,
@@ -1008,6 +1009,10 @@ def remove_from_db(pathnameext):
             tx.query("DELETE FROM files WHERE pathnameext=?", [pathnameext])
     return
 
+def signal_handler(signal, frame):
+        print('You Killed!')
+        config['salir'] = True
+
 def main(argv):
     def usage():
         print 'usage: ', argv[0]
@@ -1055,6 +1060,9 @@ def main(argv):
     if config['watch_path'] is None:
         usage()
         sys.exit()
+
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
 
     threading.current_thread().setName('m')
 
