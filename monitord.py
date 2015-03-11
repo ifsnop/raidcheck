@@ -31,6 +31,7 @@ import collections
 from contextlib import contextmanager
 from collections import defaultdict
 import resource
+import shutil
 
 config = { 'db_file' : None,
     'recursive' : False,
@@ -380,6 +381,11 @@ def format_time():
     tail = s[-7:]
     f = str('%0.3f' % round(float(tail),3))[2:]
     return '%s.%s|%s' % (s[:-7], f, threading.current_thread().name)
+
+def format_time_file():
+    t = datetime.datetime.now()
+    s = t.strftime('%Y%m%d%H%M%S')
+    return s
 
 def format_size(num):
     """Human friendly file size"""
@@ -1095,6 +1101,10 @@ def main(argv):
 
     stage1()
     sys.stdout.flush()
+
+    backup_timestamp = "~" + format_time_file()
+    shutil.copyfile(config['db_file'], config['db_file'] + backup_timestamp)
+
     stage2()
     sys.stdout.flush()
 
@@ -1108,8 +1118,8 @@ def main(argv):
 
     if not config['consistent_start']:
         print '{0} > database was not in a consistent state, fixed'.format(format_time())
-
-
+    else:
+        os.remove(config['db_file'] + backup_timestamp)
 
     #thread_BGWorkerQueuer2 = BGWorkerQueuer(config, "q2")
     #thread_BGWorkerQueuer2.start()
