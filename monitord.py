@@ -1078,6 +1078,8 @@ def main(argv):
     config['database'] = Database(config['db_file'])
     transaction = Transaction(config['database'])
 
+    sys.stdout.flush()
+
     pyinotify.log.setLevel(50)
     wm = pyinotify.WatchManager()
     notifier = pyinotify.Notifier(wm, EventHandler(), timeout=10*1000)
