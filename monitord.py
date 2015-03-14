@@ -469,7 +469,7 @@ class BGWorkerQueuer(threading.Thread):
                 time.sleep(1)
             else :
                 time1 = time.time() - time0
-                print '{0} > processing for {1:.2f} secs'.format(format_time(), time1)
+                print '{0} > processing {1} event(s) for {2:.2f} secs'.format(format_time(), i, time1)
                 sys.stdout.flush()
 
         print '{0} > bgworkerQueuer ended'.format(format_time())
