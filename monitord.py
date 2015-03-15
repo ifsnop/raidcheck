@@ -33,6 +33,7 @@ from collections import defaultdict
 import resource
 import shutil
 import signal
+import bz2
 
 config = { 'db_file' : None,
     'recursive' : False,
@@ -1000,7 +1001,6 @@ def stage4():
     return
 
 def remove_from_db(pathnameext):
-
     with config['database'].transaction() as tx:
         #print '{0} > searching for deletion ({1})'.format(format_time(), pathnameext)
         rows = tx.query("SELECT pathnameext FROM files WHERE pathnameext=?", [pathnameext])
@@ -1012,6 +1012,21 @@ def remove_from_db(pathnameext):
 def signal_handler(signal, frame):
         print('You Killed!')
         config['salir'] = True
+
+def compress_file(comp_obj, source_file, dest_file):
+    source = file(source_file, "r")
+    dest = file(dest_file, "w")
+    block = source.read(2048*2048)
+    while block:
+        c_block = comp_obj.compress(block)
+        dest.write(c_block)
+        block = source.read(2048*2048)
+    c_block= comp_obj.flush()
+    dest.write(c_block)
+    source.close()
+    dest.close()
+    os.remove(source_file)
+    return True
 
 def main(argv):
     def usage():
@@ -1128,6 +1143,9 @@ def main(argv):
 
     if not config['consistent_start']:
         print '{0} > database was not in a consistent state, fixed'.format(format_time())
+        ret = compress_file(bz2.BZ2Compressor(), config['db_file'] + backup_timestamp, config['db_file'] + backup_timestamp + ".bz2");
+        if ret == True:
+            print '{0} > database backup writen as {1}'.format(format_time(), config['db_file'] + backup_timestamp + ".bz2")
     else:
         os.remove(config['db_file'] + backup_timestamp)
 
