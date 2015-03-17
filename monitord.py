@@ -721,8 +721,10 @@ class BGWorkerVerifier(threading.Thread):
                             break
                         else:
                             time.sleep(1)
+                else:
+                    time.sleep(1)
+            if not self.config['salir']:
                 time.sleep(1)
-            time.sleep(1)
 
         print '{0} > bgworkerVerifier ended'.format(format_time())
         sys.stdout.flush()
@@ -772,6 +774,7 @@ class BGWorkerVerifier(threading.Thread):
                     (pathnameext,))
         return
 """
+
 class BGWorkerStatus(threading.Thread):
 
     def __init__(self, config, name):
