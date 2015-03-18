@@ -47,6 +47,7 @@ config = { 'db_file' : None,
     'ready' : False,
     'timeout_status' : 600,
     'consistent_start' : True,
+    'max_grouped_events' : 9,   # starting in 0
     'nice'  : False             # sleep 0.1s between hashes
 }
 
@@ -464,7 +465,7 @@ class BGWorkerQueuer(threading.Thread):
                 # removed files need to be updated from database and have no size
                 self.update_database(item)
                 i += 1
-                if i>10:
+                if i>self.config['max_grouped_events']:
                     break
             if time0 is None:
                 time.sleep(1)
