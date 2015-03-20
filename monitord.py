@@ -471,7 +471,7 @@ class BGWorkerQueuer(threading.Thread):
                 time.sleep(1)
             else :
                 time1 = time.time() - time0
-                print '{0} > processing {1} event(s) for {2:.2f} secs'.format(format_time(), i, time1)
+                print '{0} > processing {1}/{2} event(s) for {3:.2f} secs'.format(format_time(), i, self.config['queue'].qsize(), time1)
                 sys.stdout.flush()
 
         print '{0} > bgworkerQueuer ended'.format(format_time())
@@ -1171,6 +1171,8 @@ def main(argv):
             while notifier.check_events():  #loop in case more events appear while we are processing
                 notifier.read_events()
                 notifier.process_events()
+                if config['salir']:
+                    raise KeyboardInterrupt
             #print '{0} > toc'.format(format_time())
         # disabled callback counter from example, not needed
         #notifier.loop(daemonize=False, callback=on_loop_func,
@@ -1197,6 +1199,7 @@ def main(argv):
     thread_BGWorkerStatus.join()
     thread_BGWorkerVerifier.join()
 
+    print '{0} > all threads ended and sync\'ed'.format(format_time())
     sys.stdout.flush()
 
     return
