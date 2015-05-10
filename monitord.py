@@ -1118,14 +1118,16 @@ def main(argv):
         #on_loop_func = functools.partial(on_loop, counter=Counter())
 
     abort = False
+    watches = 0
     for key in config['wd']:
+        watches += 1
         if config['wd'][key] == -1:
             print '{0} > couldn\'t open path({1})'.format(format_time(), key)
             abort = True
 
     if abort:
-        print '{0} > error creating watches, maybe you should try:'.format(format_time())
-        print 'sysctl -n -w fs.inotify.max_user_watches=16384'
+        print '{0} > error creating watches, maybe you should try at least:'.format(format_time())
+        print 'sysctl -n -w fs.inotify.max_user_watches={0}'.format(watches*2)
         sys.exit(-1);
 
     stage1()
