@@ -1076,7 +1076,7 @@ def main(argv):
         usage()
         sys.exit()
 
-    if config['watch_path'] is None:
+    if config['watch_path'] is None or len(config['watch_path'])==0:
         usage()
         sys.exit()
 
