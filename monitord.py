@@ -45,10 +45,11 @@ config = { 'db_file' : None,
     'queue' : Queue(),
     'salir' : False,
     'ready' : False,
-    'timeout_status' : 600,
+    'sleep_status' : 600,     # sleep status task sleep_status seconds between reports
     'consistent_start' : True,
     'max_grouped_events' : 9,   # starting in 0
-    'nice'  : False             # sleep 0.1s between hashes
+    'nice'  : False,             # sleep 0.1s between hashes
+    'sleep_verifier' : 10       # sleep verifier task sleep_verifier seconds between reports
 }
 
 
@@ -717,7 +718,7 @@ class BGWorkerVerifier(threading.Thread):
                     else:
                         self.verify_hash(pathnameext, hash)
                         sys.stdout.flush()
-                    for i in range(60):
+                    for i in range(self.config['sleep_verifier']):
                         if self.config['salir']:
                             break
                         else:
@@ -797,7 +798,7 @@ class BGWorkerStatus(threading.Thread):
                 deleted = rowsd[0]['count']
                 if deleted>0:
                     tx.query("DELETE FROM files WHERE status LIKE ? AND ts_update < ?",
-                        ['deleted_%', datetime.datetime.now() - datetime.timedelta(minutes=1)])
+                        ['deleted_%', datetime.datetime.now() - datetime.timedelta(hours=1)])
 
                 minverified = get_min_verified()
                 #rows = tx.query("SELECT MIN(verified) AS min FROM files WHERE status=?",['hashed']);
@@ -844,7 +845,7 @@ class BGWorkerStatus(threading.Thread):
                 self.config['ready'] = True
             else:
                 self.config['ready'] = False
-            for i in range(self.config['timeout_status']):
+            for i in range(self.config['sleep_status']):
                 if self.config['salir']:
                     break
                 else:
