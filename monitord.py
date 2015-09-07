@@ -845,11 +845,15 @@ class BGWorkerStatus(threading.Thread):
                 self.config['ready'] = True
             else:
                 self.config['ready'] = False
-            for i in range(self.config['sleep_status']):
-                if self.config['salir']:
-                    break
-                else:
-                    time.sleep(1)
+
+            # wakeup exactly every sleep_status seconds. ie, sleep_status = 600, execute at 16:00, 16:10, 16:20...
+            now = time.time()
+            next_wakeup = now + self.config['sleep_status'] - ((now + self.config['sleep_status']) % self.config['sleep_status'])
+            while time.time() < next_wakeup and not self.config['salir']:
+                now = time.time()
+                sleep_time = 1 - (now % 1)
+                # adjust sleep time to full seconds, we don't want to exit at 10.993, but at 10.0
+                time.sleep(sleep_time)
 
         print "{0} > bgworkerStatus ended".format(format_time())
         sys.stdout.flush()
