@@ -862,8 +862,13 @@ class BGWorkerStatus(threading.Thread):
 def stage1():
     print "{0} > update phase 1 (check for table, purge deleted files)".format(format_time())
     with config['database'].transaction() as tx:
+        tx.query("PRAGMA synchronous=OFF")
+        tx.query("PRAGMA temp_store=MEMORY")
+        tx.query("PRAGMA count_changes=OFF")
+        tx.query("PRAGMA cache_size=8000")
         rows = tx.query("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='files'")
         if rows[0][0] != 1:
+            tx.query("PRAGMA cache_size=4096")
             tx.query("CREATE TABLE files "
                 "(pathnameext text, size integer, hash text, atime timestamp, "
                 "mtime timestamp, ctime timestamp, verified integer, ts_create timestamp, "
