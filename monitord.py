@@ -92,8 +92,20 @@ class Transaction(object):
         """
         if debug:
             print statement, subvals
-        cursor = self.db._connection().execute(statement, subvals)
-        return cursor.fetchall()
+	time_start = time.time()
+	try:
+	    cursor = self.db._connection().execute(statement, subvals)
+	    fetchall = cursor.fetchall()
+	except Exception as e:
+	    print '{0} execute raised an unhandled exception type({2}) args({3})'.format(
+	    format_time(), file, type(e), e.args)
+            sys.exit(3)
+	time_count = time.time() - time_start
+	if time_count >= 1.0:
+	    print '{0} > warning {1} {2} executed in {3:.3f} seconds'.format(
+		format_time(), statement, subvals, time_count)
+
+        return fetchall
 
     def mutate(self, statement, subvals=()):
         """Execute an SQL statement with substitution values and return
@@ -674,7 +686,12 @@ class BGWorkerHasher(threading.Thread):
     def get_file(self):
         with self.config['database'].transaction() as tx:
             rows = tx.query('''SELECT pathnameext, size, hash, ts_create, ts_update, status
-                FROM files WHERE status=? ORDER BY RANDOM() LIMIT 1''', ['created'])
+                FROM files WHERE status=? LIMIT 1
+		OFFSET ABS(RANDOM()) % MAX((SELECT COUNT(*) from files),1)''', ['created'])
+
+	    # alternativa al order by random()
+	    # ORDER BY RANDOM() LIMIT 1''', ['created'])
+
             if rows:
                 #print '{0} > found hashing candidate ({1})'.format(format_time(), rows[0]['pathnameext'])
                 pathnameext = rows[0]['pathnameext']
@@ -735,7 +752,7 @@ class BGWorkerVerifier(threading.Thread):
     def get_file(self):
         with self.config['database'].transaction() as tx:
             rows = tx.query("SELECT pathnameext FROM files WHERE status=? AND verified<=(SELECT MIN(verified) FROM files) AND hash IS NOT NULL ORDER BY RANDOM() LIMIT 1",
-                ['hashed']);
+		['hashed']);
                 #"SELECT pathnameext, size, hash, ts_create, ts_update, status FROM files WHERE status=? ORDER BY verified, ts_update LIMIT 1", ['hashed'])
                 #"SELECT pathnameext FROM files WHERE status=? GROUP BY pathnameext HAVING verified<=MIN(verified) ORDER BY RANDOM() LIMIT 1",
             if rows:
@@ -834,7 +851,7 @@ class BGWorkerStatus(threading.Thread):
                         format_time(), created, format_size(rowsc[0]['size']))
                     print "{0} > {1} files hashed using {2}".format(
                         format_time(), hashed, format_size(rowsh[0]['size']))
-                    print "{0} > {1}/{2} files pending verification until next round min/max ratio ({3}/{4})".format(
+                    print "{0} > {1}/{2} files pending/already verified until next round min/max ratio ({3}/{4})".format(
                         format_time(),  verified+created, hashed, minverified, maxverified)
                     self.hashed = hashed
                     self.created = created
@@ -873,6 +890,7 @@ def stage1():
                 "(pathnameext text, size integer, hash text, atime timestamp, "
                 "mtime timestamp, ctime timestamp, verified integer, ts_create timestamp, "
                 "ts_update timestamp, status text, UNIQUE (pathnameext))")
+	    tx.query("CREATE INDEX status ON files (status)");
         tx.query("DELETE FROM files WHERE status LIKE ?", ['deleted%'])
     return True
 
