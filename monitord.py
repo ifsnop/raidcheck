@@ -45,11 +45,12 @@ config = { 'db_file' : None,
     'queue' : Queue(),
     'salir' : False,
     'ready' : False,
-    'sleep_status' : 600,     # sleep status task sleep_status seconds between reports
+    'sleep_status' : 600,     	# sleep status task sleep_status seconds between reports
     'consistent_start' : True,
     'max_grouped_events' : 9,   # starting in 0
-    'nice'  : False,             # sleep 0.1s between hashes
-    'sleep_verifier' : 10       # sleep verifier task sleep_verifier seconds between reports
+    'nice'  : False,            # sleep 0.1s between hashes
+    'sleep_verifier' : 10,      # sleep verifier task sleep_verifier seconds between reports
+    'num_proc' : 5		# number of parallel threads
 }
 
 
@@ -1167,8 +1168,8 @@ def main(argv):
     stage2()
     sys.stdout.flush()
 
-    thread_BGWorkerQueuer1 = BGWorkerQueuer(config, "q")
-    thread_BGWorkerQueuer1.start()
+    thread_BGWorkerQueuer = BGWorkerQueuer(config, "q0")
+    thread_BGWorkerQueuer.start()
 
     stage3()
     sys.stdout.flush()
@@ -1183,16 +1184,15 @@ def main(argv):
     else:
         os.remove(config['db_file'] + backup_timestamp)
 
-    #thread_BGWorkerQueuer2 = BGWorkerQueuer(config, "q2")
-    #thread_BGWorkerQueuer2.start()
-    #thread_BGWorkerQueuer3 = BGWorkerQueuer(config, "q3")
-    #thread_BGWorkerQueuer3.start()
+    thread_BGWorkerHasher = []
+    for i in range(config['num_proc']):
+        thread = BGWorkerHasher(config, "h" + str(i))
+        thread.start()
+	thread_BGWorkerHasher.append(thread);
 
-    thread_BGWorkerHasher = BGWorkerHasher(config, "h")
-    thread_BGWorkerHasher.start()
-    thread_BGWorkerStatus = BGWorkerStatus(config, "s")
+    thread_BGWorkerStatus = BGWorkerStatus(config, "s0")
     thread_BGWorkerStatus.start()
-    thread_BGWorkerVerifier = BGWorkerVerifier(config, "v")
+    thread_BGWorkerVerifier = BGWorkerVerifier(config, "v0")
     thread_BGWorkerVerifier.start()
 
     try:
@@ -1222,10 +1222,10 @@ def main(argv):
 
     sys.stdout.flush()
 
-    thread_BGWorkerQueuer1.join()
-    ##thread_BGWorkerQueuer2.join()
-    ##thread_BGWorkerQueuer3.join()
-    thread_BGWorkerHasher.join()
+    thread_BGWorkerQueuer.join()
+    for thread in thread_BGWorkerHasher:
+	thread.join()
+
     thread_BGWorkerStatus.join()
     thread_BGWorkerVerifier.join()
 
